@@ -5,20 +5,20 @@ const client = new Anthropic({
 });
 
 /**
- * Generate a Strudel pattern based on context and feedback
- * @param {Object} context - Current musical context
+ * Generate queue operations based on context and feedback
+ * @param {Object} context - Current musical context including queue
  * @param {Array} feedback - Recent feedback from users
  * @param {Object} styleMemory - Learned style preferences
- * @returns {Promise<string>} - Generated Strudel code
+ * @returns {Promise<Array>} - Array of queue operations
  */
-export async function generatePattern(context, feedback, styleMemory) {
-  const systemPrompt = buildSystemPrompt(styleMemory);
+export async function generateQueueOperations(context, feedback, styleMemory) {
+  const systemPrompt = buildSystemPrompt(styleMemory, context.tempo);
   const userPrompt = buildUserPrompt(context, feedback);
 
   try {
     const message = await client.messages.create({
       model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 2000,
+      max_tokens: 3000,
       system: systemPrompt,
       messages: [
         {
@@ -28,13 +28,13 @@ export async function generatePattern(context, feedback, styleMemory) {
       ],
     });
 
-    // Extract the Strudel code from the response
+    // Extract queue operations from the response
     const response = message.content[0].text;
-    const strudelCode = extractStrudelCode(response);
+    const operations = extractQueueOperations(response);
 
-    return strudelCode;
+    return operations;
   } catch (error) {
-    console.error('Error generating pattern:', error);
+    console.error('Error generating queue operations:', error);
     throw error;
   }
 }
@@ -42,72 +42,122 @@ export async function generatePattern(context, feedback, styleMemory) {
 /**
  * Build the system prompt for Claude
  */
-function buildSystemPrompt(styleMemory) {
-  return `You are an expert live coding musician specializing in Strudel, a JavaScript-based music live coding environment.
+function buildSystemPrompt(styleMemory, tempo) {
+  const bpm = tempo?.bpm || 120;
+  const cps = (bpm / 60).toFixed(2);
 
-Your goal is to create engaging, danceable music patterns that respond to community feedback.
+  return `You are an expert live coding musician specializing in Strudel, managing a queue-based music system.
 
-Key principles:
-- Generate valid Strudel code that can be immediately evaluated
-- Create patterns that evolve gradually, not drastically (unless requested)
-- Balance complexity with listenability
-- Consider the feedback and learned preferences
-- Use Strudel's mini-notation for rhythm patterns
-- Experiment with different sounds, effects, and patterns
+## Queue-Based System
 
-CRITICAL - Use ONLY Pure Synthesis (NO SAMPLES):
-- Use note() with built-in synths: "triangle", "square", "sawtooth", "sine"
-- NEVER use sound() - it tries to load samples from the internet
-- NEVER use .s() with drum kit names
-- Build drum sounds with synthesis: note("<c1 c2>").s("square").lpf(100)
-- Use effects: .lpf(), .hpf(), .room(), .delay(), .vowel()
-- Combine with stack() to layer parts
+The music plays from a QUEUE of patterns. Each pattern has:
+- **pattern**: Strudel code (must include setcps(${cps}) for ${bpm} BPM)
+- **bars**: Duration in bars (4 beats per bar in 4/4 time)
 
-${styleMemory ? `Current community preferences:
-- Tempo preference: ${styleMemory.preferredTempo || 'Not established yet'}
-- Liked elements: ${styleMemory.likedElements?.join(', ') || 'None yet'}
-- Disliked elements: ${styleMemory.dislikedElements?.join(', ') || 'None yet'}
-- Overall vibe: ${styleMemory.vibe || 'Exploratory'}` : ''}
+Your job: Maintain a queue of 4-6 patterns ahead. Generate queue operations as JSON.
 
-ONLY USE THESE PATTERNS (synthesized sounds only):
-\`\`\`javascript
-note("c3 e3 g3 c4").s("triangle").slow(2)
-note("<c1 c2 c1 c2>*4").s("square").lpf(200)
-stack(note("c1*4").s("square"), note("c4 e4 g4").s("sawtooth").slow(2))
-note("c2 e2 g2").s("sine").room(0.5).delay(0.25)
+## Queue Operations
+
+\`\`\`json
+[
+  { "action": "add", "pattern": "setcps(${cps}).s('breaks:7').loopAt(2)", "bars": 8 },
+  { "action": "insert", "index": 0, "pattern": "...", "bars": 4 },
+  { "action": "remove", "id": "uuid" },
+  { "action": "replace", "id": "uuid", "pattern": "...", "bars": 16 },
+  { "action": "clear" }
+]
 \`\`\`
 
-NEVER use sound() or external samples - ONLY note() + synth names!
+**When to use each:**
+- **add**: Most common - append patterns to queue
+- **insert**: Add urgency (insert at position 0-2 for soon)
+- **remove**: Delete specific queued pattern
+- **replace**: Update existing queued pattern
+- **clear**: Flush queue (use for major direction changes)
 
-Return ONLY the Strudel code, wrapped in a code block. The code should be a single Strudel pattern expression.`;
+## Musical Timing
+
+**Current Tempo**: ${bpm} BPM (setcps(${cps}))
+**Bar Structure**: 4 beats per bar
+
+**Typical Bar Counts:**
+- 4 bars: Short phrase, transition
+- 8 bars: Standard phrase, groove
+- 16 bars: Extended development
+- 32 bars: Long-form evolution
+
+Always include \`setcps(${cps})\` at the start of each pattern!
+
+${styleMemory ? `## Community Preferences
+
+- Tempo: ${styleMemory.preferredTempo || 'Not established'}
+- Liked: ${styleMemory.likedElements?.join(', ') || 'None yet'}
+- Disliked: ${styleMemory.dislikedElements?.join(', ') || 'None yet'}
+- Vibe: ${styleMemory.vibe || 'Exploratory'}` : ''}
+
+## Available Sounds
+
+**Samples** (from switchangel):
+- \`s("breaks:N")\`: Drum breaks (N = 0-10+)
+- \`s("swpad:N")\`: Atmospheric pads (N = 0-10+)
+
+**Synthesis**:
+- \`note("c3 e3 g3").s("triangle|square|sawtooth|sine")\`
+
+**Example Patterns**:
+\`\`\`javascript
+s("breaks:7").loopAt(2).fit().room(.4).cps(${cps})
+stack(s("breaks:2*4"), note("c2 e2 g2").s("sine").lpf(400)).cps(${cps})
+s("swpad:3").slow(4).room(0.9).delay(0.25).cps(${cps})
+\`\`\`
+
+**IMPORTANT**: Use \`.cps(${cps})\` at the END of the pattern chain, NOT \`setcps()\` at the start!
+
+## Response Format
+
+Return ONLY a JSON array of operations. Think musically about bar counts and queue flow!`;
 }
 
 /**
  * Build the user prompt with context and feedback
  */
 function buildUserPrompt(context, feedback) {
-  const currentPattern = context.currentPattern || 'sound("bd sd")';
-  const iterationType = context.iterationType || 'micro-variation';
+  const { currentPattern, queue, queueLength, targetQueueLength, tempo } = context;
 
-  let prompt = `Current pattern:
+  let prompt = `## Current State
+
+**Now Playing**: ${currentPattern.bars} bars
 \`\`\`javascript
-${currentPattern}
+${currentPattern.pattern}
 \`\`\`
 
+**Queue**: ${queueLength} patterns (target: ${targetQueueLength})
 `;
 
+  if (queue && queue.length > 0) {
+    prompt += '\nQueued patterns:\n';
+    queue.forEach((p, i) => {
+      const preview = p.pattern.substring(0, 60);
+      prompt += `${i + 1}. ${p.bars} bars - ${preview}...\n`;
+    });
+  } else {
+    prompt += '(Queue is empty - needs patterns!)\n';
+  }
+
+  prompt += '\n';
+
   if (feedback && feedback.length > 0) {
-    prompt += `Recent feedback from ${feedback.length} listener(s):\n`;
+    prompt += `## Recent Feedback (${feedback.length} items)\n\n`;
 
     const likes = feedback.filter(f => f.type === 'like').length;
     const dislikes = feedback.filter(f => f.type === 'dislike').length;
     const suggestions = feedback.filter(f => f.type === 'suggestion');
 
-    if (likes > 0) prompt += `- ${likes} likes\n`;
-    if (dislikes > 0) prompt += `- ${dislikes} dislikes\n`;
+    if (likes > 0) prompt += `👍 ${likes} likes\n`;
+    if (dislikes > 0) prompt += `👎 ${dislikes} dislikes\n`;
 
     if (suggestions.length > 0) {
-      prompt += `\nSuggestions:\n`;
+      prompt += `\n💡 Suggestions:\n`;
       suggestions.forEach(s => {
         prompt += `- "${s.content}"\n`;
       });
@@ -116,43 +166,94 @@ ${currentPattern}
     prompt += '\n';
   }
 
-  if (iterationType === 'micro-variation') {
-    prompt += `Generate a MICRO-VARIATION of the current pattern:
-- Keep the same general structure and vibe
-- Make small adjustments: slightly different rhythms, add/remove one element, tweak effects
-- Stay close to what's working
-`;
+  // Generate appropriate instructions based on queue state
+  const needsPatterns = queueLength < targetQueueLength;
+  const patternsNeeded = targetQueueLength - queueLength;
+
+  if (needsPatterns) {
+    prompt += `## Task\n\nQueue needs ${patternsNeeded} more pattern(s).\n\n`;
+
+    if (queueLength === 0) {
+      prompt += `Generate ${targetQueueLength} patterns to fill the queue. Consider:\n`;
+      prompt += `- Musical progression and flow\n`;
+      prompt += `- Variety in bar lengths (4, 8, 16 bars)\n`;
+      prompt += `- Build energy and interest over time\n`;
+    } else {
+      prompt += `Add ${patternsNeeded} pattern(s) that continue the musical journey.\n`;
+    }
+
+    if (feedback && feedback.length > 0) {
+      prompt += `\nIncorporate the feedback into your new patterns!\n`;
+    }
   } else {
-    prompt += `Generate a MAJOR EVOLUTION based on the feedback:
-- You can change genre, tempo, structure
-- Incorporate the suggestions meaningfully
-- Take the music in a new direction while staying musical
-`;
+    prompt += `## Task\n\nQueue is healthy (${queueLength} patterns). `;
+
+    if (feedback && feedback.length > 0) {
+      prompt += `Consider feedback - should you modify the queue?\n`;
+      prompt += `- Strong positive feedback: Keep current direction\n`;
+      prompt += `- Negative feedback or suggestions: Clear and regenerate\n`;
+    } else {
+      prompt += `No action needed unless you want to refine upcoming patterns.\n`;
+    }
   }
+
+  prompt += `\nReturn JSON array of queue operations.`;
 
   return prompt;
 }
 
 /**
- * Extract Strudel code from Claude's response
+ * Extract queue operations from Claude's response
  */
-function extractStrudelCode(response) {
-  // Try to extract code from code block
-  const codeBlockMatch = response.match(/```(?:javascript|js)?\s*([\s\S]*?)```/);
+function extractQueueOperations(response) {
+  // Try to extract JSON from code block
+  const jsonBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
 
-  if (codeBlockMatch) {
-    return codeBlockMatch[1].trim();
-  }
-
-  // If no code block, try to find common Strudel patterns
-  const lines = response.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.includes('sound(') || trimmed.includes('note(') || trimmed.includes('s(')) {
-      return trimmed;
+  let jsonText;
+  if (jsonBlockMatch) {
+    jsonText = jsonBlockMatch[1].trim();
+  } else {
+    // Try to find JSON array in the response
+    const arrayMatch = response.match(/\[\s*\{[\s\S]*?\}\s*\]/);
+    if (arrayMatch) {
+      jsonText = arrayMatch[0];
+    } else {
+      jsonText = response.trim();
     }
   }
 
-  // Fallback: return the whole response
-  return response.trim();
+  try {
+    const operations = JSON.parse(jsonText);
+
+    if (!Array.isArray(operations)) {
+      console.error('Operations is not an array:', operations);
+      return [];
+    }
+
+    // Validate operations
+    const validOperations = operations.filter(op => {
+      if (!op.action) {
+        console.warn('Operation missing action:', op);
+        return false;
+      }
+
+      if (['add', 'insert'].includes(op.action) && (!op.pattern || !op.bars)) {
+        console.warn('Add/insert operation missing pattern or bars:', op);
+        return false;
+      }
+
+      return true;
+    });
+
+    return validOperations;
+  } catch (error) {
+    console.error('Failed to parse queue operations:', error);
+    console.error('Response:', response.substring(0, 500));
+    // Fallback: generate a simple add operation
+    return [{
+      action: 'add',
+      pattern: `setcps(2).s("breaks:${Math.floor(Math.random() * 10)}").loopAt(2).fit()`,
+      bars: 8
+    }];
+  }
 }

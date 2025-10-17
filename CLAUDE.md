@@ -49,23 +49,41 @@ The `<strudel-editor>` component (from CDN: `https://unpkg.com/@strudel/repl@lat
 
 **AudioManager** (`public/src/audioManager.js`):
 - Waits for `element.editor` to be available
-- Critical: Must wait for `editor.prebaked` promise to settle (even if it fails with 404)
-- Replace failed prebake promise: `editor.prebaked = Promise.resolve()`
+- Handles `editor.prebaked` promise (default samples, may fail with 404)
+- Loads custom samples after initialization:
+  - `samples('github:switchangel/breaks')` - drum breaks and percussion
+  - `samples('github:switchangel/pad')` - atmospheric pad sounds
 - Pattern playback: Set `editor.code`, call `editor.evaluate()`, then `editor.repl.start()`
 - Must resume AudioContext if suspended: Check `state === 'suspended'` and call `ctx.resume()`
 
-**Strudel Prebake Issue:**
-- @strudel/repl tries to load `uzu-drumkit.json` from GitHub (returns 404)
-- This breaks pattern evaluation if not handled
-- Workaround: Catch prebake failure and replace with resolved promise
+**Sample Loading:**
+- The `samples()` function is globally available after strudel-editor initializes
+- Custom samples are loaded in `loadCustomSamples()` after editor is ready
+- Falls back to evaluating samples() as code if not globally available
+- Sample maps load immediately; audio files load lazily on first play
 
-### Agent Loop
+### Agent Loop and Queue System
 
-The music generation agent (`server/agent.js`):
-- **Auto-starts** when server boots
-- **Micro-variations**: Every 15 seconds (configurable)
-- **Major changes**: Triggered by 2+ feedback items
-- **Style memory**: Tracks community preferences
+The music uses a **queue-based architecture** with two independent loops:
+
+1. **Queue Processor** (`server/queueProcessor.js`):
+   - Rhythm-aware REPL update loop
+   - Checks every bar boundary (based on BPM)
+   - Transitions patterns on musical boundaries
+   - Falls back to looping if queue is empty
+
+2. **Music Agent** (`server/agent.js`):
+   - Claude generation loop (every 20 seconds)
+   - Maintains queue of 4-6 patterns ahead
+   - Generates queue operations (add, insert, remove, replace, clear)
+   - Responds to feedback by modifying queue
+   - **Style memory**: Tracks community preferences
+
+**Musical Timing:**
+- Default: 120 BPM, 4/4 time signature
+- Patterns specify duration in **bars** (not seconds)
+- Bar duration = `(60000 / BPM) * 4` milliseconds
+- All transitions happen on bar boundaries
 
 ### Key Dependencies
 
@@ -101,33 +119,57 @@ The server uses `dotenv/config` auto-import at the top of `server/index.js`.
 
 ### Strudel Pattern Syntax
 
-Patterns use Strudel's mini-notation (Tidal Cycles syntax). **IMPORTANT:** Only use synthesis, not samples:
+Patterns use Strudel's mini-notation (Tidal Cycles syntax). Both synthesis and samples are supported:
 
+**Synthesis** (always available, instant):
 ```javascript
-// ✅ GOOD - Pure synthesis (works reliably)
 note("c3 e3 g3").s("triangle")
 note("c1 c2").s("square").lpf(200)
 stack(note("c3*4").s("sine"), note("c5 e5").s("sawtooth"))
-
-// ❌ BAD - Samples (require loading from network)
-sound("bd sd")  // Tries to load samples, will fail
-s("piano")      // Tries to load piano samples
 ```
 
-**Why synthesis only?**
-- Sample loading from GitHub fails (404 errors block playback)
-- Synthesis is instant and always available
+**Samples** (loaded from switchangel repos):
+```javascript
+s("breaks:7").loopAt(2).fit()       // Drum breaks
+s("swpad:0").slow(4).room(0.8)      // Atmospheric pads
+```
+
+**Hybrid** (mix synthesis and samples):
+```javascript
+stack(
+  s("breaks:2*4"),
+  note("c2 e2 g2").s("sine").lpf(400)
+)
+```
+
+**Available Sample Banks:**
+- `breaks:N` - Drum breaks and percussion loops from switchangel/breaks
+- `swpad:N` - Atmospheric pad sounds from switchangel/pad
 - Built-in synths: "triangle", "square", "sawtooth", "sine"
 
-### Agent Timing
+### Agent Configuration
 
 Located in `server/agent.js`:
 ```javascript
-this.MICRO_VARIATION_INTERVAL = 15000; // 15 seconds
-this.MAJOR_CHANGE_FEEDBACK_THRESHOLD = 2; // 2 feedback items
+this.GENERATION_INTERVAL = 20000; // Check queue every 20 seconds
+this.MIN_QUEUE_LENGTH = 3; // Minimum patterns to maintain
+this.TARGET_QUEUE_LENGTH = 5; // Target queue length
+this.MAJOR_CHANGE_FEEDBACK_THRESHOLD = 2; // Feedback for queue regeneration
 ```
 
-Adjust these for different responsiveness. Too fast (<10s) may overwhelm API rate limits.
+Located in `server/index.js`:
+```javascript
+tempo: {
+  bpm: 120,
+  beatsPerBar: 4
+}
+```
+
+**Pattern Duration Calculation:**
+```javascript
+duration_ms = bars * beatsPerBar * (60000 / bpm)
+// Example: 8 bars at 120 BPM = 8 * 4 * 500 = 16000ms (16 seconds)
+```
 
 ### WebSocket Connection
 
@@ -174,3 +216,4 @@ claude-bside/
 ├── vite.config.js       # Vite config with proxy
 └── .env                 # API keys (gitignored)
 ```
+- You can read the opensource strudel.cc repository under ../strudel. If its not there, you might want to ask the user to fetch it for you so you can use it to understand the strudel APIs better.

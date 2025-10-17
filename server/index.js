@@ -2,12 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { MusicAgent } from './agent.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { QueueProcessor } from './queueProcessor.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -15,18 +11,29 @@ const io = new Server(httpServer);
 
 const PORT = process.env.PORT || 3000;
 
-// Serve static files from public directory
-app.use(express.static(join(__dirname, '../public')));
-
 // Store connected clients and current state
 const state = {
-  currentPattern: `note("c3 e3 g3 c4").s("triangle").slow(2)`, // Pure synthesis - no samples!
+  tempo: {
+    bpm: 120,
+    beatsPerBar: 4,
+    get beatDuration() { return 60000 / this.bpm; },
+    get barDuration() { return (60000 / this.bpm) * this.beatsPerBar; }
+  },
+  patternQueue: [],
+  currentPattern: {
+    id: null,
+    pattern: `s("breaks:7").loopAt(2).fit().room(.4).delay(.25).cps(2)`,
+    bars: 8,
+    startedAt: null,
+    endsAt: null
+  },
   clients: new Set(),
   feedback: []
 };
 
-// Initialize the music agent
-const agent = new MusicAgent(io, state);
+// Initialize the music agent and queue processor
+const queueProcessor = new QueueProcessor(io, state);
+const agent = new MusicAgent(io, state, queueProcessor);
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
@@ -35,7 +42,8 @@ io.on('connection', (socket) => {
 
   // Send current pattern to newly connected client
   socket.emit('pattern-update', {
-    pattern: state.currentPattern,
+    pattern: state.currentPattern.pattern,
+    bars: state.currentPattern.bars,
     timestamp: Date.now()
   });
 
@@ -124,16 +132,27 @@ app.get('/api/style/export', (req, res) => {
   res.json(profile);
 });
 
+// Get queue status
+app.get('/api/queue', (req, res) => {
+  const queueInfo = queueProcessor.getQueueInfo();
+  res.json(queueInfo);
+});
+
 httpServer.listen(PORT, () => {
   console.log(`🎵 Claude B-Side server running on http://localhost:${PORT}`);
   console.log(`Connected clients: 0`);
+  console.log(`Tempo: ${state.tempo.bpm} BPM`);
   console.log('\n📝 API Endpoints:');
   console.log('  POST /api/agent/start - Start the AI agent');
   console.log('  POST /api/agent/stop - Stop the AI agent');
   console.log('  GET  /api/style/summary - Get style preferences');
   console.log('  GET  /api/style/export - Export style profile');
+  console.log('  GET  /api/queue - Get queue status');
 
-  // Auto-start the agent
+  // Auto-start the queue processor and agent
+  console.log('\n🎼 Auto-starting queue processor...');
+  queueProcessor.start();
+
   console.log('\n🤖 Auto-starting music agent...');
   agent.start();
 });

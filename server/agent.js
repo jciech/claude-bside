@@ -1,24 +1,28 @@
-import { generatePattern } from './claude.js';
+import { generateQueueOperations } from './claude.js';
 import { StyleMemory } from './memory.js';
+import { randomUUID } from 'crypto';
 
 export class MusicAgent {
-  constructor(io, state) {
+  constructor(io, state, queueProcessor) {
     this.io = io;
     this.state = state;
+    this.queueProcessor = queueProcessor;
     this.styleMemory = new StyleMemory();
     this.isRunning = false;
-    this.microVariationInterval = null;
+    this.generationInterval = null;
     this.lastMajorChange = Date.now();
 
     // Configuration
-    this.MICRO_VARIATION_INTERVAL = 15000; // 15 seconds (faster iterations!)
-    this.MAJOR_CHANGE_FEEDBACK_THRESHOLD = 2; // 2 pieces of feedback triggers consideration (more responsive!)
+    this.GENERATION_INTERVAL = 20000; // 20 seconds - check queue and generate if needed
+    this.MAJOR_CHANGE_FEEDBACK_THRESHOLD = 2;
+    this.MIN_QUEUE_LENGTH = 3; // Minimum patterns to maintain
+    this.TARGET_QUEUE_LENGTH = 5; // Target queue length
   }
 
   /**
    * Start the agentic loop
    */
-  start() {
+  async start() {
     if (this.isRunning) {
       console.log('Agent already running');
       return;
@@ -27,21 +31,27 @@ export class MusicAgent {
     console.log('🤖 Starting music agent...');
     this.isRunning = true;
 
-    // Schedule micro-variations
-    this.microVariationInterval = setInterval(() => {
-      this.performMicroVariation();
-    }, this.MICRO_VARIATION_INTERVAL);
+    // Generate initial queue if empty
+    if (this.state.patternQueue.length === 0) {
+      console.log('📝 Generating initial queue...');
+      await this.performQueueUpdate('initial');
+    }
 
-    console.log(`✅ Agent started (micro-variations every ${this.MICRO_VARIATION_INTERVAL/1000}s)`);
+    // Schedule queue updates
+    this.generationInterval = setInterval(() => {
+      this.performQueueUpdate('periodic');
+    }, this.GENERATION_INTERVAL);
+
+    console.log(`✅ Agent started (checking queue every ${this.GENERATION_INTERVAL/1000}s)`);
   }
 
   /**
    * Stop the agentic loop
    */
   stop() {
-    if (this.microVariationInterval) {
-      clearInterval(this.microVariationInterval);
-      this.microVariationInterval = null;
+    if (this.generationInterval) {
+      clearInterval(this.generationInterval);
+      this.generationInterval = null;
     }
 
     this.isRunning = false;
@@ -49,30 +59,33 @@ export class MusicAgent {
   }
 
   /**
-   * Process feedback and decide whether to make a major change
+   * Process feedback and potentially update the queue
    */
   async processFeedback(feedback) {
     // Update style memory
-    this.styleMemory.processFeedback(feedback, this.state.currentPattern);
+    this.styleMemory.processFeedback(feedback, this.state.currentPattern.pattern);
 
-    // Check if we should make a major change
+    // Check if we should regenerate based on feedback
     const recentFeedback = this.getRecentFeedback();
     const feedbackSinceLastChange = recentFeedback.filter(
       f => f.timestamp > this.lastMajorChange
     );
 
-    const shouldMakeMajorChange = this.shouldMakeMajorChange(feedbackSinceLastChange);
+    const shouldRegenerateQueue = this.shouldRegenerateQueue(feedbackSinceLastChange);
 
-    if (shouldMakeMajorChange) {
-      console.log('🎯 Major change triggered by feedback');
-      await this.performMajorChange();
+    if (shouldRegenerateQueue) {
+      console.log('🎯 Queue regeneration triggered by feedback');
+      // Clear queue and regenerate
+      this.clearQueue();
+      await this.performQueueUpdate('feedback');
+      this.lastMajorChange = Date.now();
     }
   }
 
   /**
-   * Determine if major change is warranted
+   * Determine if queue should be regenerated based on feedback
    */
-  shouldMakeMajorChange(recentFeedback) {
+  shouldRegenerateQueue(recentFeedback) {
     if (recentFeedback.length < this.MAJOR_CHANGE_FEEDBACK_THRESHOLD) {
       return false;
     }
@@ -81,75 +94,120 @@ export class MusicAgent {
     const dislikes = recentFeedback.filter(f => f.type === 'dislike').length;
     const suggestions = recentFeedback.filter(f => f.type === 'suggestion').length;
 
-    // Make major change if:
+    // Regenerate queue if:
     // - More dislikes than likes
     // - Or we have explicit suggestions
     return dislikes > likes || suggestions >= 2;
   }
 
   /**
-   * Perform a micro-variation
+   * Perform queue update - generate patterns based on queue state
    */
-  async performMicroVariation() {
-    if (!this.isRunning) return;
+  async performQueueUpdate(updateType = 'periodic') {
+    if (!this.isRunning && updateType !== 'initial') return;
 
-    console.log('🎵 Generating micro-variation...');
+    const queueLength = this.state.patternQueue.length;
+    const shouldGenerate = updateType === 'initial' || queueLength < this.MIN_QUEUE_LENGTH;
 
-    try {
-      const context = {
-        currentPattern: this.state.currentPattern,
-        iterationType: 'micro-variation'
-      };
-
-      const recentFeedback = this.getRecentFeedback(5);
-      const styleSummary = this.styleMemory.getSummary();
-
-      const newPattern = await generatePattern(context, recentFeedback, styleSummary);
-
-      this.updatePattern(newPattern, 'micro-variation');
-    } catch (error) {
-      console.error('Error generating micro-variation:', error);
+    if (!shouldGenerate) {
+      console.log(`📊 Queue OK (${queueLength} patterns)`);
+      return;
     }
-  }
 
-  /**
-   * Perform a major change
-   */
-  async performMajorChange() {
-    console.log('🚀 Generating major change...');
+    console.log(`🎵 Generating queue updates (current: ${queueLength})...`);
 
     try {
       const context = {
         currentPattern: this.state.currentPattern,
-        iterationType: 'major-change'
+        queue: this.state.patternQueue,
+        queueLength: queueLength,
+        targetQueueLength: this.TARGET_QUEUE_LENGTH,
+        tempo: this.state.tempo
       };
 
       const recentFeedback = this.getRecentFeedback(10);
       const styleSummary = this.styleMemory.getSummary();
 
-      const newPattern = await generatePattern(context, recentFeedback, styleSummary);
+      const operations = await generateQueueOperations(context, recentFeedback, styleSummary);
 
-      this.updatePattern(newPattern, 'major-change');
-      this.lastMajorChange = Date.now();
+      this.executeQueueOperations(operations);
     } catch (error) {
-      console.error('Error generating major change:', error);
+      console.error('Error generating queue updates:', error);
     }
   }
 
   /**
-   * Update pattern and broadcast to clients
+   * Execute queue operations returned by Claude
    */
-  updatePattern(newPattern, changeType) {
-    this.state.currentPattern = newPattern;
+  executeQueueOperations(operations) {
+    if (!Array.isArray(operations)) {
+      console.error('Invalid operations format');
+      return;
+    }
 
-    console.log(`✨ New pattern (${changeType}):`, newPattern.slice(0, 80) + '...');
+    for (const op of operations) {
+      switch (op.action) {
+        case 'add':
+          this.addPattern(op.pattern, op.bars);
+          break;
+        case 'insert':
+          this.insertPattern(op.index, op.pattern, op.bars);
+          break;
+        case 'remove':
+          this.removePattern(op.id);
+          break;
+        case 'replace':
+          this.replacePattern(op.id, op.pattern, op.bars);
+          break;
+        case 'clear':
+          this.clearQueue();
+          break;
+        default:
+          console.warn(`Unknown operation: ${op.action}`);
+      }
+    }
 
-    // Broadcast to all clients
-    this.io.emit('pattern-update', {
-      pattern: newPattern,
-      changeType,
-      timestamp: Date.now()
-    });
+    console.log(`✨ Queue updated: ${this.state.patternQueue.length} patterns`);
+  }
+
+  addPattern(pattern, bars) {
+    const patternObj = {
+      id: randomUUID(),
+      pattern,
+      bars,
+      addedAt: Date.now()
+    };
+    this.state.patternQueue.push(patternObj);
+  }
+
+  insertPattern(index, pattern, bars) {
+    const patternObj = {
+      id: randomUUID(),
+      pattern,
+      bars,
+      addedAt: Date.now()
+    };
+    this.state.patternQueue.splice(index, 0, patternObj);
+  }
+
+  removePattern(id) {
+    this.state.patternQueue = this.state.patternQueue.filter(p => p.id !== id);
+  }
+
+  replacePattern(id, pattern, bars) {
+    const index = this.state.patternQueue.findIndex(p => p.id === id);
+    if (index !== -1) {
+      this.state.patternQueue[index] = {
+        id,
+        pattern,
+        bars,
+        addedAt: Date.now()
+      };
+    }
+  }
+
+  clearQueue() {
+    this.state.patternQueue = [];
   }
 
   /**

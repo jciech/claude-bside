@@ -38,13 +38,18 @@ export class AudioManager {
         if (this.editorElement.editor) {
           this.editor = this.editorElement.editor;
 
-          // Wait for prebake, replace if it fails (404 on uzu-drumkit.json)
           if (this.editor.prebaked) {
             try {
               await this.editor.prebaked;
             } catch (err) {
               this.editor.prebaked = Promise.resolve();
             }
+          }
+
+          try {
+            await this.loadCustomSamples();
+          } catch (err) {
+            console.warn('Custom samples failed to load:', err.message);
           }
 
           resolve();
@@ -59,9 +64,23 @@ export class AudioManager {
     });
   }
 
+  async loadCustomSamples() {
+    if (typeof window.samples === 'function') {
+      await window.samples('github:switchangel/breaks');
+      await window.samples('github:switchangel/pad');
+      return;
+    }
+
+    console.warn('window.samples not available yet');
+  }
+
   async playPattern(code) {
     if (!this.isInitialized || !this.editor) {
       throw new Error('AudioManager not initialized. Call initialize() first.');
+    }
+
+    if (typeof code !== 'string') {
+      throw new Error(`Pattern must be a string, got ${typeof code}`);
     }
 
     try {
@@ -71,28 +90,21 @@ export class AudioManager {
 
       this.editor.code = code;
       this.editor.setCode(code);
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      try {
-        await this.editor.evaluate();
-      } catch (err) {
-        // Ignore prebake errors
-      }
-
+      await this.editor.evaluate();
       this.editor.repl.start();
       this.isPlaying = true;
 
-      // Resume AudioContext if browser suspended it
       try {
-        const { getAudioContext } = await import('@strudel/webaudio');
-        const ctx = getAudioContext();
-        if (ctx.state === 'suspended') await ctx.resume();
+        const ctx = this.editor.repl.audioContext;
+        if (ctx && ctx.state === 'suspended') {
+          await ctx.resume();
+        }
       } catch (err) {}
 
       this.currentPattern = code;
       return true;
     } catch (error) {
-      console.error('❌ Error playing pattern:', error);
+      console.error('Error playing pattern:', error);
       throw error;
     }
   }

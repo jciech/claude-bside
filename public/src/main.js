@@ -63,7 +63,6 @@ socket.on('disconnect', () => {
 socket.on('pattern-update', async (data) => {
   currentPattern = data.pattern;
 
-  // If we're listening, auto-play the new pattern
   if (isListening && audioManager.isInitialized) {
     try {
       await audioManager.playPattern(data.pattern);

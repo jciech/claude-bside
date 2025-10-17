@@ -24,10 +24,12 @@ A collaborative AI music streaming platform where Claude generates live music us
 
 ### Under the Hood
 
-1. **Micro-variations** (every 15 seconds): Claude tweaks the current pattern
-2. **Feedback triggers changes**: 2+ pieces of feedback → major evolution
-3. **Style learning**: System tracks what the community likes
-4. **Auto-start agent**: Music generation begins when server starts
+1. **Queue Processor**: Transitions patterns on bar boundaries based on BPM
+2. **Claude Generation Loop**: Maintains 4-6 patterns in queue, checks every 20s
+3. **Musical timing**: 120 BPM, patterns specify duration in bars (4, 8, 16, 32)
+4. **Feedback triggers changes**: 2+ pieces of feedback → queue regeneration
+5. **Style learning**: System tracks what the community likes
+6. **Auto-start**: Both queue processor and agent start when server boots
 
 ## Tech Stack
 
@@ -81,10 +83,12 @@ Navigate to **http://localhost:5173**
 
 ## Important Notes
 
-- **Synthesis only**: Patterns use pure synthesis (note() + synths) not samples
+- **Queue-based system**: Patterns are queued and transition on musical bar boundaries
+- **Musical timing**: Runs at 120 BPM by default with bar-synchronized transitions
+- **Samples & synthesis**: Uses switchangel breaks/pads plus built-in synths
 - **One click to start**: Browser requires user interaction to enable audio
-- **Auto-play after**: Once started, new patterns play automatically every 15 seconds
-- **Patterns evolve**: Small variations continuously, major changes based on feedback
+- **Auto-play**: New patterns transition automatically based on bar duration
+- **Claude controls the queue**: AI manages 4-6 patterns ahead, adapts to feedback
 
 ## Development
 
@@ -115,7 +119,8 @@ npm run client  # Frontend with HMR
 claude-bside/
 ├── server/              # Backend (Node.js + Express)
 │   ├── index.js         # Main server + WebSocket
-│   ├── agent.js         # Music generation agent
+│   ├── agent.js         # Music generation agent (queue operations)
+│   ├── queueProcessor.js # Rhythm-aware REPL update loop
 │   ├── claude.js        # Claude API integration
 │   └── memory.js        # Style memory system
 ├── public/              # Frontend (served by Vite)
@@ -132,6 +137,7 @@ claude-bside/
 
 - `POST /api/agent/start` - Manually start the agent (auto-starts on boot)
 - `POST /api/agent/stop` - Stop the agent
+- `GET /api/queue` - Get queue status (current pattern, queued patterns, BPM)
 - `GET /api/style/summary` - Get current style preferences
 - `GET /api/style/export` - Export style profile as JSON
 - `POST /api/pattern` - Manually update pattern (for testing)
@@ -142,12 +148,25 @@ claude-bside/
 ### Agent Settings
 
 Edit `server/agent.js` to adjust:
-- `MICRO_VARIATION_INTERVAL` - Time between pattern changes (default: 15 seconds)
-- `MAJOR_CHANGE_FEEDBACK_THRESHOLD` - Feedback needed for major changes (default: 2)
+- `GENERATION_INTERVAL` - Queue check interval (default: 20 seconds)
+- `MIN_QUEUE_LENGTH` - Minimum patterns in queue (default: 3)
+- `TARGET_QUEUE_LENGTH` - Target queue length (default: 5)
+- `MAJOR_CHANGE_FEEDBACK_THRESHOLD` - Feedback for queue regeneration (default: 2)
 
-### Audio Initialization
+### Tempo Settings
 
-The system uses Web Audio API which requires **one user interaction** before audio can play. This is a browser security feature. After the initial "Start Listening" click, all subsequent patterns play automatically.
+Edit `server/index.js` to adjust:
+- `bpm` - Beats per minute (default: 120)
+- `beatsPerBar` - Time signature (default: 4)
+
+### Audio & Timing
+
+**Web Audio**: Requires one user interaction before audio can play (browser security). After "Start Listening", patterns auto-play.
+
+**Musical Timing**: Pattern transitions happen on bar boundaries for smooth, musical flow:
+- Duration = `bars × beatsPerBar × (60000 / BPM)` milliseconds
+- Example: 8 bars at 120 BPM = 16 seconds
+- Queue processor checks on every bar (every 2 seconds at 120 BPM)
 
 ## Deployment
 
