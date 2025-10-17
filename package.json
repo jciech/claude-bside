@@ -1,0 +1,39 @@
+{
+  "name": "claude-bside",
+  "version": "0.1.0",
+  "description": "Collaborative AI music platform with Claude and Strudel",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "server": "node server/index.js",
+    "server:dev": "node --watch server/index.js",
+    "client": "vite",
+    "client:build": "vite build",
+    "dev": "npm run server:dev",
+    "start": "npm run server"
+  },
+  "keywords": [
+    "music",
+    "ai",
+    "strudel",
+    "claude",
+    "collaboration"
+  ],
+  "author": "",
+  "license": "AGPL-3.0-or-later",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@strudel/core": "^1.2.4",
+    "@strudel/mini": "^1.2.4",
+    "@strudel/repl": "^1.2.6",
+    "@strudel/transpiler": "^1.2.4",
+    "@strudel/webaudio": "^1.2.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "vite": "^7.1.10"
+  }
+}
