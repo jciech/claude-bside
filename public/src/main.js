@@ -65,11 +65,16 @@ socket.on('pattern-update', async (data) => {
 
   if (isListening && audioManager.isInitialized) {
     try {
-      await audioManager.playPattern(data.pattern);
-      showNotification('🎵 New pattern!');
+      const result = await audioManager.playPattern(data.pattern);
+      if (result.fallback) {
+        showNotification('⚠️ Pattern error, continuing previous');
+        console.warn('Pattern failed, using fallback:', result.error);
+      } else {
+        showNotification('🎵 New pattern!');
+      }
     } catch (error) {
       console.error('Error playing pattern:', error);
-      showNotification('❌ Error');
+      showNotification('❌ Playback error');
     }
   }
 });

@@ -3,6 +3,7 @@ export class AudioManager {
     this.isInitialized = false;
     this.isPlaying = false;
     this.currentPattern = null;
+    this.lastValidPattern = null; // Fallback for when new patterns fail
     this.editorElement = null;
     this.editor = null;
   }
@@ -102,9 +103,27 @@ export class AudioManager {
       } catch (err) {}
 
       this.currentPattern = code;
-      return true;
+      this.lastValidPattern = code; // Remember this worked
+      return { success: true, pattern: code };
     } catch (error) {
       console.error('Error playing pattern:', error);
+
+      // Try to recover with last valid pattern
+      if (this.lastValidPattern && this.lastValidPattern !== code) {
+        console.warn('Falling back to last valid pattern');
+        try {
+          this.editor.code = this.lastValidPattern;
+          this.editor.setCode(this.lastValidPattern);
+          await this.editor.evaluate();
+          this.editor.repl.start();
+          this.isPlaying = true;
+          this.currentPattern = this.lastValidPattern;
+          return { success: false, pattern: this.lastValidPattern, fallback: true, error: error.message };
+        } catch (fallbackError) {
+          console.error('Fallback also failed:', fallbackError);
+        }
+      }
+
       throw error;
     }
   }

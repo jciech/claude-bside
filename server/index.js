@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import { randomUUID } from 'crypto';
 import { MusicAgent } from './agent.js';
 import { QueueProcessor } from './queueProcessor.js';
 
@@ -54,11 +55,14 @@ io.on('connection', (socket) => {
   socket.on('feedback', async (data) => {
     console.log('Received feedback:', data);
 
+    // Snapshot the pattern at the moment feedback is received
     const feedbackItem = {
       id: socket.id,
       type: data.type, // 'like', 'dislike', or 'suggestion'
       content: data.content,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      patternId: state.currentPattern.id,
+      pattern: state.currentPattern.pattern
     };
 
     state.feedback.push(feedbackItem);
@@ -81,19 +85,19 @@ io.on('connection', (socket) => {
 
 // API endpoint to manually update pattern (for testing)
 app.post('/api/pattern', express.json(), (req, res) => {
-  const { pattern } = req.body;
+  const { pattern, bars = 8 } = req.body;
 
   if (!pattern) {
     return res.status(400).json({ error: 'Pattern is required' });
   }
 
-  state.currentPattern = pattern;
-
-  // Broadcast new pattern to all connected clients
-  io.emit('pattern-update', {
-    pattern: state.currentPattern,
-    timestamp: Date.now()
-  });
+  // Use queueProcessor to properly play the pattern with correct timing
+  const patternObj = {
+    id: randomUUID(),
+    pattern,
+    bars
+  };
+  queueProcessor.playPattern(patternObj);
 
   res.json({ success: true, pattern: state.currentPattern });
 });

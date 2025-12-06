@@ -7,7 +7,11 @@
       "Bash(npm install:*)",
       "Read(//Users/janc/**)",
       "Bash(curl:*)",
-      "Bash(npm info:*)"
+      "Bash(npm info:*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:docs.claude.com)",
+      "Bash(cat:*)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []

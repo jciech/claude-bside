@@ -62,8 +62,8 @@ export class MusicAgent {
    * Process feedback and potentially update the queue
    */
   async processFeedback(feedback) {
-    // Update style memory
-    this.styleMemory.processFeedback(feedback, this.state.currentPattern.pattern);
+    // Update style memory using the pattern snapshot from when feedback was given
+    this.styleMemory.processFeedback(feedback);
 
     // Check if we should regenerate based on feedback
     const recentFeedback = this.getRecentFeedback();

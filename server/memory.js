@@ -20,35 +20,38 @@ export class StyleMemory {
 
   /**
    * Process feedback and update memory
-   * @param {Object} feedback - Feedback item
-   * @param {string} currentPattern - Current pattern code
+   * Feedback now includes patternId and pattern snapshot from when it was submitted
+   * @param {Object} feedback - Feedback item with pattern snapshot
    */
-  processFeedback(feedback, currentPattern) {
+  processFeedback(feedback) {
     if (feedback.type === 'like') {
       this.likeCount++;
-      this.recordPatternSuccess(currentPattern, 1);
+      this.recordPatternSuccess(feedback.patternId, feedback.pattern, 1);
     } else if (feedback.type === 'dislike') {
       this.dislikeCount++;
-      this.recordPatternSuccess(currentPattern, -1);
+      this.recordPatternSuccess(feedback.patternId, feedback.pattern, -1);
     } else if (feedback.type === 'suggestion') {
-      this.processSuggestion(feedback.content);
+      this.processSuggestion(feedback.content, feedback.patternId);
     }
   }
 
   /**
    * Record pattern success/failure
+   * Now indexed by patternId for accurate attribution
    */
-  recordPatternSuccess(pattern, score) {
-    const existing = this.patterns.find(p => p.code === pattern);
+  recordPatternSuccess(patternId, patternCode, score) {
+    // Use patternId as the primary key for accurate attribution
+    const existing = this.patterns.find(p => p.id === patternId);
 
     if (existing) {
       existing.score += score;
-      existing.plays++;
+      existing.feedbackCount++;
     } else {
       this.patterns.push({
-        code: pattern,
+        id: patternId,
+        code: patternCode,
         score,
-        plays: 1,
+        feedbackCount: 1,
         timestamp: Date.now()
       });
     }
@@ -62,11 +65,12 @@ export class StyleMemory {
   /**
    * Process text suggestion and extract musical intent
    */
-  processSuggestion(text) {
+  processSuggestion(text, patternId) {
     const lowercased = text.toLowerCase();
 
     this.suggestions.push({
       text,
+      patternId,
       timestamp: Date.now()
     });
 
@@ -139,13 +143,26 @@ export class StyleMemory {
       vibe = 'Need to switch things up';
     }
 
+    // Get top and bottom patterns by score
+    const sortedPatterns = [...this.patterns].sort((a, b) => b.score - a.score);
+    const topPatterns = sortedPatterns
+      .filter(p => p.score > 0)
+      .slice(0, 3)
+      .map(p => ({ code: p.code, score: p.score }));
+    const bottomPatterns = sortedPatterns
+      .filter(p => p.score < 0)
+      .slice(-3)
+      .map(p => ({ code: p.code, score: p.score }));
+
     return {
       likedElements: Array.from(this.likedElements),
       dislikedElements: Array.from(this.dislikedElements),
       preferredTempo,
       vibe,
       totalFeedback: this.likeCount + this.dislikeCount + this.suggestions.length,
-      netScore
+      netScore,
+      topPatterns,
+      bottomPatterns
     };
   }
 
@@ -160,8 +177,9 @@ export class StyleMemory {
         .sort((a, b) => b.score - a.score)
         .slice(0, 5)
         .map(p => ({
+          id: p.id,
           score: p.score,
-          plays: p.plays,
+          feedbackCount: p.feedbackCount,
           code: p.code.slice(0, 100) // Truncate for readability
         })),
       exported: new Date().toISOString()

@@ -2,6 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -10,42 +11,39 @@
         ]
       }
     ],
-    "PreToolUse": {
-      "Write": [
-        {
-          "hooks": [
-            {
-              "type": "command",
-              "command": ".claude/hooks/pre-write-secret-scan.sh",
-              "args": ["{{new_string}}", "{{file_path}}"]
-            }
-          ]
-        }
-      ],
-      "Edit": [
-        {
-          "hooks": [
-            {
-              "type": "command",
-              "command": ".claude/hooks/pre-write-secret-scan.sh",
-              "args": ["{{new_string}}", "{{file_path}}"]
-            }
-          ]
-        }
-      ]
-    },
-    "PostToolUse": {
-      "Edit": [
-        {
-          "hooks": [
-            {
-              "type": "command",
-              "command": ".claude/hooks/post-edit-check.sh",
-              "args": ["{{file_path}}"]
-            }
-          ]
-        }
-      ]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-write-secret-scan.sh",
+            "args": ["{{new_string}}", "{{file_path}}"]
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-write-secret-scan.sh",
+            "args": ["{{new_string}}", "{{file_path}}"]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-edit-check.sh",
+            "args": ["{{file_path}}"]
+          }
+        ]
+      }
+    ]
   }
 }

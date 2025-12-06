@@ -51,7 +51,7 @@ function buildSystemPrompt(styleMemory, tempo) {
 ## Queue-Based System
 
 The music plays from a QUEUE of patterns. Each pattern has:
-- **pattern**: Strudel code (must include setcps(${cps}) for ${bpm} BPM)
+- **pattern**: Strudel code (must end with .cps(${cps}) for ${bpm} BPM)
 - **bars**: Duration in bars (4 beats per bar in 4/4 time)
 
 Your job: Maintain a queue of 4-6 patterns ahead. Generate queue operations as JSON.
@@ -60,7 +60,7 @@ Your job: Maintain a queue of 4-6 patterns ahead. Generate queue operations as J
 
 \`\`\`json
 [
-  { "action": "add", "pattern": "setcps(${cps}).s('breaks:7').loopAt(2)", "bars": 8 },
+  { "action": "add", "pattern": "s('breaks:7').loopAt(2).cps(${cps})", "bars": 8 },
   { "action": "insert", "index": 0, "pattern": "...", "bars": 4 },
   { "action": "remove", "id": "uuid" },
   { "action": "replace", "id": "uuid", "pattern": "...", "bars": 16 },
@@ -77,7 +77,7 @@ Your job: Maintain a queue of 4-6 patterns ahead. Generate queue operations as J
 
 ## Musical Timing
 
-**Current Tempo**: ${bpm} BPM (setcps(${cps}))
+**Current Tempo**: ${bpm} BPM
 **Bar Structure**: 4 beats per bar
 
 **Typical Bar Counts:**
@@ -86,14 +86,20 @@ Your job: Maintain a queue of 4-6 patterns ahead. Generate queue operations as J
 - 16 bars: Extended development
 - 32 bars: Long-form evolution
 
-Always include \`setcps(${cps})\` at the start of each pattern!
+**IMPORTANT**: Always end patterns with \`.cps(${cps})\` to set the tempo!
 
 ${styleMemory ? `## Community Preferences
 
 - Tempo: ${styleMemory.preferredTempo || 'Not established'}
-- Liked: ${styleMemory.likedElements?.join(', ') || 'None yet'}
-- Disliked: ${styleMemory.dislikedElements?.join(', ') || 'None yet'}
-- Vibe: ${styleMemory.vibe || 'Exploratory'}` : ''}
+- Liked elements: ${styleMemory.likedElements?.join(', ') || 'None yet'}
+- Disliked elements: ${styleMemory.dislikedElements?.join(', ') || 'None yet'}
+- Vibe: ${styleMemory.vibe || 'Exploratory'}
+${styleMemory.topPatterns?.length > 0 ? `
+**Patterns the crowd loved** (use these as inspiration):
+${styleMemory.topPatterns.map(p => `- Score +${p.score}: \`${p.code}\``).join('\n')}` : ''}
+${styleMemory.bottomPatterns?.length > 0 ? `
+**Patterns that flopped** (avoid similar styles):
+${styleMemory.bottomPatterns.map(p => `- Score ${p.score}: \`${p.code}\``).join('\n')}` : ''}` : ''}
 
 ## Available Sounds
 
@@ -110,8 +116,6 @@ s("breaks:7").loopAt(2).fit().room(.4).cps(${cps})
 stack(s("breaks:2*4"), note("c2 e2 g2").s("sine").lpf(400)).cps(${cps})
 s("swpad:3").slow(4).room(0.9).delay(0.25).cps(${cps})
 \`\`\`
-
-**IMPORTANT**: Use \`.cps(${cps})\` at the END of the pattern chain, NOT \`setcps()\` at the start!
 
 ## Response Format
 
@@ -249,10 +253,10 @@ function extractQueueOperations(response) {
   } catch (error) {
     console.error('Failed to parse queue operations:', error);
     console.error('Response:', response.substring(0, 500));
-    // Fallback: generate a simple add operation
+    // Fallback: generate a simple add operation (uses default 120 BPM = 2 cps)
     return [{
       action: 'add',
-      pattern: `setcps(2).s("breaks:${Math.floor(Math.random() * 10)}").loopAt(2).fit()`,
+      pattern: `s("breaks:${Math.floor(Math.random() * 10)}").loopAt(2).fit().cps(2)`,
       bars: 8
     }];
   }

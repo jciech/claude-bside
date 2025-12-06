@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Claude asterisk logo -->
+  <g transform="translate(50,50)">
+    <!-- 8 rays emanating from center -->
+    <circle cx="0" cy="0" r="8" fill="#CC785C"/>
+    <line x1="0" y1="-35" x2="0" y2="-10" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="25" y1="-25" x2="7" y2="-7" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="35" y1="0" x2="10" y2="0" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="25" y1="25" x2="7" y2="7" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="0" y1="35" x2="0" y2="10" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-25" y1="25" x2="-7" y2="7" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-35" y1="0" x2="-10" y2="0" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-25" y1="-25" x2="-7" y2="-7" stroke="#CC785C" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>
