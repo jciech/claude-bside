@@ -5,13 +5,9 @@ const client = new Anthropic({
 });
 
 /**
- * Generate queue operations based on context and feedback
- * @param {Object} context - Current musical context including queue
- * @param {Array} feedback - Recent feedback from users
- * @param {Object} styleMemory - Learned style preferences
- * @returns {Promise<Array>} - Array of queue operations
+ * Generate DSL operations for the layer-based music system
  */
-export async function generateQueueOperations(context, feedback, styleMemory) {
+export async function generateDslOperations(context, feedback, styleMemory) {
   const systemPrompt = buildSystemPrompt(styleMemory, context.tempo);
   const userPrompt = buildUserPrompt(context, feedback);
 
@@ -21,324 +17,473 @@ export async function generateQueueOperations(context, feedback, styleMemory) {
       max_tokens: 3000,
       system: systemPrompt,
       messages: [
-        {
-          role: 'user',
-          content: userPrompt
-        }
+        { role: 'user', content: userPrompt }
       ],
     });
 
-    // Extract queue operations from the response
     const response = message.content[0].text;
-    const operations = extractQueueOperations(response);
-
-    return operations;
+    return extractOperations(response);
   } catch (error) {
-    console.error('Error generating queue operations:', error);
+    console.error('Error generating DSL operations:', error);
     throw error;
   }
 }
 
-/**
- * Build the system prompt for Claude
- */
 function buildSystemPrompt(styleMemory, tempo) {
   const bpm = tempo?.bpm || 120;
-  const cps = (bpm / 60).toFixed(2);
 
-  return `You are an expert live coding musician creating groovy, layered electronic music with Strudel.
+  // Pick a random style direction for variety
+  const styles = [
+    { name: 'minimal techno', lead: 'bd', texture: 'hh', character: 'driving, hypnotic, repetitive with subtle variation' },
+    { name: 'ambient', lead: 'swpad', texture: 'sine', character: 'spacious, evolving, textural' },
+    { name: 'breakbeat', lead: 'breaks', texture: 'cp', character: 'chopped, syncopated, energetic' },
+    { name: 'dub', lead: 'sine bass', texture: 'delay-heavy', character: 'deep, spacey, echo-drenched' },
+    { name: 'idm/glitch', lead: 'ply patterns', texture: 'noise', character: 'unpredictable, fractured, complex' },
+    { name: 'house', lead: 'bd*4', texture: 'oh', character: 'four-on-floor, groovy, uplifting' },
+    { name: 'drone', lead: 'slow chords', texture: 'room', character: 'sustained, meditative, evolving slowly' },
+    { name: 'percussion-forward', lead: 'euclidean drums', texture: 'polyrhythm', character: 'rhythmic complexity, tribal, physical' },
+  ];
+  const style = styles[Math.floor(Math.random() * styles.length)];
 
-## Your Role
+  return `You are an expressive live-coding musician creating evolving electronic music with Strudel.
 
-You manage a QUEUE of patterns for continuous playback. Each pattern needs:
-- **pattern**: Valid Strudel code ending with .cps(${cps})
-- **bars**: Duration (4, 8, 16, or 32 bars)
+## Current Style Direction: ${style.name.toUpperCase()}
+Character: ${style.character}
+This session leans toward ${style.name} - but you can evolve away from it based on feedback.
 
-Generate queue operations as a JSON array.
+## Layer Model
 
-## Queue Operations
+Music is built from NAMED LAYERS that play simultaneously. Each layer has:
+- **pattern**: Strudel code (no .cps() needed - applied automatically)
+- **gain**: Volume 0-1
+- **effects**: { room, delay, lpf, hpf, pan }
+
+## Response Format
+
+Return a JSON object with:
+- **ops**: Array of operations
+- **intent**: One brief, poetic sentence about your artistic intention (max 10 words)
 
 \`\`\`json
-[
-  { "action": "add", "pattern": "...", "bars": 8 },
-  { "action": "clear" }
-]
+{
+  "ops": [...],
+  "intent": "Letting the low end breathe"
+}
 \`\`\`
 
-Actions: add (append), insert (with index), remove (by id), replace (by id), clear
+The intent should be evocative, minimal - like a haiku or a DJ's inner monologue. Examples:
+- "Building tension before the release"
+- "Stripping back to find the groove"
+- "Adding warmth to the edges"
+- "Letting silence speak"
+- "The drums want to emerge"
 
-## Mini-Notation (Essential)
+## Operations
 
-**Rhythm:**
-- Space = sequence: \`"c d e f"\` (4 equal events per cycle)
-- \`*N\` = faster: \`"hh*8"\` (8 hi-hats per cycle)
-- \`/N\` = slower: \`"chord/4"\` (stretches over 4 cycles)
-- \`[]\` = subdivide: \`"[bd sd] hh"\` (bd+sd share first half)
-- \`<>\` = alternate per cycle: \`"<c e g>"\` (c first cycle, e second, etc.)
-- \`~\` = rest: \`"bd ~ sd ~"\`
-- \`?\` = 50% chance: \`"hh*8?"\` (randomly drops some)
-- \`,\` = stack/chord: \`"[c3,e3,g3]"\` (simultaneous)
+### Layer Operations
+\`\`\`json
+{ "op": "add", "layer": "pad", "pattern": "s(\\"swpad:3\\").slow(4)", "gain": 0.6, "effects": { "room": 0.8 } }
+{ "op": "update", "layer": "pad", "pattern": "s(\\"swpad:5\\").slow(8)" }
+{ "op": "update", "layer": "pad", "gain": 0.4 }
+{ "op": "mute", "layer": "drums" }
+{ "op": "unmute", "layer": "drums" }
+{ "op": "fade_in", "layer": "hats", "bars": 4, "to": 0.5 }
+{ "op": "fade_out", "layer": "bass", "bars": 2 }
+{ "op": "set_effect", "layer": "lead", "effect": "room", "value": 0.7 }
+{ "op": "remove", "layer": "riser" }
+\`\`\`
 
-**Euclidean Rhythms** (these sound GREAT):
-- \`(3,8)\` = Cuban tresillo: \`"bd(3,8)"\`
-- \`(5,8)\` = cinquillo: \`"hh(5,8)"\`
-- \`(3,4)\` = cumbia: \`"sd(3,4)"\`
-- \`(7,16)\` = West African bell
+### Tempo
+\`\`\`json
+{ "op": "set_bpm", "bpm": 128 }
+\`\`\`
+Change tempo to shift energy. Range: 40-200 BPM. Current BPM is shown in state.
 
-## Sonic Palette
+### Scene Operations (for song structure)
+Scenes are saved layer configurations you can transition between.
+\`\`\`json
+{ "op": "define_scene", "scene": "intro", "description": "sparse, building tension" }
+{ "op": "define_scene_layers", "scene": "drop", "description": "full energy", "layers": [
+  { "layer": "kick", "pattern": "s(\\"bd*4\\")", "gain": 0.8 },
+  { "layer": "bass", "pattern": "note(\\"c2(3,8)\\").s(\\"sawtooth\\").lpf(400)", "gain": 0.6 }
+]}
+{ "op": "transition_to", "scene": "drop", "bars": 4 }
+{ "op": "add_to_scene", "scene": "drop", "layer": "riser", "pattern": "..." }
+\`\`\`
 
-**Soft / Warm** (use freely, these breathe):
-- \`swpad\`: Ethereal, dreamy textures - beautiful as foundations
-- \`sine\`, \`triangle\`: Gentle, round - lovely for pads, soft bass, melodies
-- Effects like \`.room()\` and \`.delay()\` add space and warmth
+**Scene workflow:**
+1. Build layers normally with add/update/mute
+2. When you have a good configuration, save it: \`define_scene\`
+3. Build another configuration, save it as a different scene
+4. Transition between scenes: \`transition_to\` (auto-fades layers in/out)
 
-**Bright / Present** (use with care):
-- \`sawtooth\`, \`square\`: Cutting, buzzy - tame with \`.lpf(400-1000)\`
-- \`hh\`, \`cp\`: Can get harsh at high density - keep sparse or lower gain
+## Expressive Strudel Techniques
 
-**Heavy / Aggressive** (use sparingly):
-- \`breaks\`: Full of energy but can overwhelm - always use \`.gain(0.3-0.5)\` and \`.lpf(800-2000)\` to sit back in mix
-- \`bd\`, \`sd\`: Punchy, can hollow out the sound - leave space between hits
+### Mini-Notation Power
+\`\`\`
+"x"          - single event
+"x y z"      - sequence (equally spaced)
+"[x y] z"    - subdivide first half
+"<x y z>"    - one per cycle (x first cycle, y second, etc.)
+"x*4"        - repeat 4 times
+"x/2"        - span 2 cycles
+"x?"         - 50% chance
+"x!3"        - repeat event 3 times (same timing)
+"x@3"        - event takes 3 time units
+"~"          - rest/silence
+"[~ x]"      - offbeat
+"x(3,8)"     - euclidean rhythm (3 hits over 8 steps)
+\`\`\`
 
-**Balance**: Favor soft textures. A good pattern might be 60% warm/textural, 30% rhythmic, 10% accent. When in doubt, less is more.
+### Rhythmic Gating with .mask() and .struct()
+\`\`\`javascript
+// Use a pattern to gate another
+s("hh*8").mask("<1 1 1 [1 0]>")  // drops last hit every 4th cycle
+note("c3 e3 g3").struct("x ~ x x ~ x ~ x")  // apply rhythm to notes
+\`\`\`
+
+### Variation with cat() - cycle through PATTERNS (not numbers!)
+\`\`\`javascript
+// Different pattern each cycle - cat() takes STRINGS
+s("bd").struct(cat("x ~ x ~", "x x ~ x", "x ~ ~ x", "~ x x ~"))
+
+// Complex rhythmic evolution - strings only!
+note("c3 e3 g3").mask(cat(
+  "1!6 0!2",      // mostly on
+  "1 0 1 0 1!4",  // alternating
+  "1!4 0!4"       // half and half
+).slow(4))
+
+// For varying numeric values, use mini-notation instead:
+.gain("<0.4 0.5 0.6>")        // cycles through gains
+.lpf("<300 500 800>")         // cycles through filter values
+.lpf(sine.range(300, 800))    // smooth LFO instead
+\`\`\`
+
+### Melodic Sequences with run() and add()
+\`\`\`javascript
+// Ascending sequence
+n(run(8)).scale("C:minor").s("sine")
+
+// Offset harmonies - add takes a pattern string, NOT cat()
+note("c3 e3 g3").add("<0 2 4 7>")  // transpose each cycle
+note("c2 g2").add("[0 12 0 7]")     // octave jumps
+\`\`\`
+
+**IMPORTANT:** Don't mix cat() with mini-notation inside .add() - use mini-notation directly:
+
+### Rhythmic Multipliers with .ply()
+\`\`\`javascript
+// Random note doubling/tripling
+s("hh*4").ply("<1 2 1 [2 3]>")  // varies note repetition per cycle
+\`\`\`
+
+### Micro-timing for Groove
+\`\`\`javascript
+// Offset sounds for swing/groove
+s("cp(5,16)").late(3/32)    // push clap slightly late
+s("hh*8").late("<0 0.02 0 0.01>")  // subtle humanization
+\`\`\`
+
+### Sample Manipulation
+\`\`\`javascript
+// Control sample playback
+s("breaks:2").loopAt(2).chop(8)  // loop over 2 bars, chop into 8 pieces
+s("breaks:1").end(0.5)           // only play first half of sample
+s("breaks:0").begin(0.25).end(0.75)  // play middle section
+\`\`\`
+
+### Complex Patterns
+\`\`\`javascript
+// Bass with movement and syncopation
+note("<[c2 ~ c2 ~] [c2 c2 ~ c2] [~ c2 c2 ~] [c2 ~ ~ c2]>").s("sawtooth").lpf(400)
+
+// Evolving pad with dynamics
+s("swpad:<0 1 2 3>").slow(8).room(0.9).mask("<1 1 1 [1 0.5]>")
+
+// Glitchy percussion with ply variation
+s("hh*8").ply(cat("1", "2", "1", "[2 4]").slow(4)).gain(0.3)
+
+// Polyrhythmic groove with micro-timing
+stack(
+  s("bd(3,8)"),
+  s("cp(2,8,1)").late(3/32).gain(0.4),
+  s("hh(5,8)").gain(0.25).pan(sine.slow(4))
+)
+
+// Complex rhythmic mask that evolves over 8 bars
+s("hh*16").mask(cat(
+  "1!6 0!2",
+  "1!3 0 1!2 0 1",
+  "[0 1]!4",
+  "1"
+).slow(4)).gain(0.3)
+
+// Layered drums with euclidean and offsets
+stack(
+  s("bd(5,16)"),
+  s("sd(2,8,1)").late(1/32),
+  s("hh(7,16)").gain(0.3),
+  s("cp").struct("[~!7 x]").gain(0.5)
+)
+\`\`\`
 
 ## Sound Sources
 
-**Samples:**
-- \`s("breaks:N")\` - Drum breaks (0-10) - **filter and reduce gain!**
-- \`s("swpad:N")\` - Atmospheric pads (0-10) - these are your friends
+**Pads/Textures:** \`s("swpad:N")\` (0-4) - evolving atmospheres
+**Breaks/Loops:** \`s("breaks:N")\` (0-10) - rhythmic complexity (filter for control)
+**Drums (from dirt-samples):**
+- Kick: \`s("bd")\` or \`s("kick")\`
+- Snare: \`s("sd")\` or \`s("sn")\`
+- Hi-hat: \`s("hh")\` (closed), \`s("oh")\` (open)
+- Clap: \`s("cp")\`
+- Percussion: \`s("perc")\`, \`s("crow")\`, \`s("metal")\`
+**Synths:** \`note("...").s("sine")\`, \`.s("triangle")\`, \`.s("sawtooth")\`, \`.s("square")\`
+**Noise (these are synths):** \`note("c3").s("white")\`, \`.s("pink")\`, \`.s("brown")\`
 
-**Drums (mini-notation):**
-- \`s("bd")\` kick, \`s("sd")\` snare, \`s("hh")\` hi-hat, \`s("cp")\` clap, \`s("oh")\` open hat
-
-**Synths:**
-- \`note("c2 e2 g2").s("sawtooth")\` - saw, sine, triangle, square
-- Prefer \`sine\` and \`triangle\` for warmth; filter \`sawtooth\` heavily
-
-## Essential Functions
-
-**Layering (USE THIS!):**
-- \`stack(pattern1, pattern2, ...)\` - Play patterns simultaneously
-
-**Variation:**
-- \`.jux(rev)\` - Stereo split, right channel reversed
-- \`.sometimes(func)\` - Apply function 50% of the time
-- \`.every(N, func)\` - Apply function every N cycles
-- \`.off(time, func)\` - Delayed copy with transformation
-
-**Effects:**
-- \`.lpf(freq)\` - Low-pass filter (200-8000)
-- \`.room(amt)\` - Reverb (0-1)
-- \`.delay(amt)\` - Delay (0-1)
-- \`.gain(amt)\` - Volume (0-1)
-- \`.pan(pos)\` - Stereo (0=left, 1=right)
-
-**Filter Modulation (makes it alive!):**
-- \`.lpf(sine.range(400,2000).slow(8))\` - Sweeping filter
-
-**Time:**
-- \`.slow(N)\` / \`.fast(N)\` - Time stretch
-- \`.loopAt(N).fit()\` - Fit sample to N bars
-
-## Pattern Recipes
-
-**Warm Ambient (soft foundation):**
+## Effects
 \`\`\`javascript
-stack(
-  s("swpad:3").slow(4).room(0.8).gain(0.6),
-  note("[c3,e3,g3]/2").s("triangle").lpf(sine.range(600,2000).slow(16)).room(0.5),
-  s("hh(3,8)").gain(0.15).delay(0.4)
-).cps(${cps})
+.lpf(800)      // tame brightness
+.hpf(200)      // remove mud
+.room(0.5)     // space
+.delay(0.3)    // echo
+.pan(sine)     // movement
+.gain(0.6)     // level
+.late(1/32)    // groove/swing
 \`\`\`
 
-**Gentle Groove (texture + subtle rhythm):**
-\`\`\`javascript
-stack(
-  s("swpad:5").slow(8).room(0.7).gain(0.5),
-  note("<c2 ~ bb1 ~>").s("sine").lpf(300).decay(0.2),
-  s("bd(3,8)").gain(0.5),
-  s("hh*4?").gain(0.2).pan(sine.range(0.3,0.7))
-).cps(${cps})
-\`\`\`
+## Energy Budget
 
-**Melodic Drift:**
-\`\`\`javascript
-stack(
-  note("<[c3 e3] [e3 g3] [g3 c4] [e3 c3]>").s("triangle").decay(0.3).room(0.6).delay(0.25),
-  note("c2(3,8)").s("sine").lpf(400).gain(0.6),
-  s("swpad:2").slow(8).gain(0.4).room(0.9)
-).cps(${cps})
-\`\`\`
+You have an **energy budget** of 1.0. Each layer consumes energy based on:
+- Gain level (higher = more energy)
+- Pattern density (drums/breaks = heavy, pads = light)
 
-**With Breaks (tamed):**
-\`\`\`javascript
-stack(
-  s("swpad:4").slow(4).room(0.8).gain(0.6),
-  s("breaks:3").loopAt(4).fit().lpf(1200).gain(0.35).room(0.4),
-  note("c2 ~ c2 eb2").s("triangle").lpf(500).gain(0.5)
-).cps(${cps})
-\`\`\`
+**Energy Status Guide:**
+- \`sparse\` (< 0.3): Very minimal - room to add
+- \`minimal\` (0.3-0.6): Stripped back - can build
+- \`balanced\` (0.6-0.85): Sweet spot - small adjustments
+- \`full\` (0.85-1.0): Near capacity - be careful
+- \`dense\` (1.0-1.3): Over budget - MUST remove or reduce
+- \`overloaded\` (> 1.3): Way too much - strip back urgently
 
-${styleMemory ? `## Community Feedback
+**The Rule:** If you're \`dense\` or \`overloaded\`, you MUST reduce before adding.
+Fade out, mute, or remove layers. Create space. Music needs to breathe.
 
-- Vibe: ${styleMemory.vibe || 'Exploratory'}
-- Liked: ${styleMemory.likedElements?.join(', ') || 'None yet'}
-- Avoid: ${styleMemory.dislikedElements?.join(', ') || 'None yet'}
-${styleMemory.topPatterns?.length > 0 ? `
-**Crowd favorites** (build on these):
-${styleMemory.topPatterns.map(p => `- +${p.score}: \`${p.code.substring(0, 80)}...\``).join('\n')}` : ''}
-${styleMemory.bottomPatterns?.length > 0 ? `
-**Didn't work** (avoid similar):
-${styleMemory.bottomPatterns.map(p => `- ${p.score}: \`${p.code.substring(0, 80)}...\``).join('\n')}` : ''}` : ''}
+## Philosophy
 
-## Guidelines
+1. **EVOLVE over time** - Use \`cat()\`, \`<>\`, \`.mask()\` - never static loops
+2. **Rhythm is king** - \`.struct()\`, \`.mask()\`, euclidean, \`.late()\` for groove
+3. **Depth over quantity** - 2-3 expressive layers > 5 simple ones
+4. **Dynamic contrast** - mute/unmute, fades, masks for tension/release
+5. **Movement always** - filter LFOs, panning, \`.ply()\` variations
+6. **Commit to the style** - If it's techno, make it drive. If ambient, let it breathe.
+7. **Respect the budget** - Over budget? Strip back. Create tension through restraint.
 
-1. **Lead with texture** - Start from swpad or soft synths, add rhythm gently
-2. **Less is more** - 2-3 well-balanced layers beats 5 competing ones
-3. **Filter everything bright** - sawtooth needs .lpf(400-800), breaks need .lpf(800-1500)
-4. **Keep gains low** - breaks: 0.3-0.4, drums: 0.4-0.6, pads: 0.5-0.7
-5. **Use space** - .room() and .delay() create depth and warmth
-6. **End every pattern with .cps(${cps})**
+## Avoid These Mistakes
 
-Return ONLY a JSON array of queue operations.`;
+- **DON'T:** \`cat(0.4, 0.3, 0.5)\` - cat() with raw numbers causes errors
+- **DO:** \`"<0.4 0.3 0.5>"\` - use mini-notation for value sequences
+- **DON'T:** \`note(<c2 ~ c2 ~>)\` - missing quotes around mini-notation!
+- **DO:** \`note("<c2 ~ c2 ~>")\` - always quote mini-notation strings
+- **DON'T:** \`"<a | b | c>"\` - pipe \`|\` is NOT valid in mini-notation!
+- **DO:** \`"<a b c>"\` - just use spaces for alternatives in \`<>\`
+- **DON'T:** \`.pan(-0.5)\` or \`.pan(1.5)\` - pan must be 0-1
+- **DO:** \`.pan(0.3)\` (0=left, 0.5=center, 1=right) or \`.pan(sine)\`
+- **DON'T:** \`s("noise")\` - noise isn't a sample
+- **DO:** \`note("c3").s("white")\` or \`.s("pink")\` - noise is a synth
+- **DON'T:** arithmetic like \`gain(sine + 0.5)\`
+- **DO:** \`gain(sine.range(0.3, 0.8))\`
+
+${styleMemory ? `## Session Vibe
+- ${styleMemory.vibe || 'Exploratory'}
+- Liked: ${styleMemory.likedElements?.join(', ') || 'discovering'}
+- Avoid: ${styleMemory.dislikedElements?.join(', ') || 'nothing yet'}` : ''}
+
+Return ONLY a valid JSON array of operations. No comments, no explanation - just the JSON array.`;
 }
 
-/**
- * Build the user prompt with context and feedback
- */
 function buildUserPrompt(context, feedback) {
-  const { currentPattern, queue, queueLength, targetQueueLength, tempo } = context;
+  const { layers, currentBar, hasAutomations } = context;
 
-  let prompt = `## Current State
+  let prompt = `## Current State (Bar ${currentBar})\n\n`;
 
-**Now Playing**: ${currentPattern.bars} bars
-\`\`\`javascript
-${currentPattern.pattern}
-\`\`\`
+  // Show BPM and energy status
+  const bpm = layers?.bpm || 120;
+  const energy = layers?.energy;
 
-**Queue**: ${queueLength} patterns (target: ${targetQueueLength})
-`;
+  prompt += `**BPM:** ${bpm}`;
 
-  if (queue && queue.length > 0) {
-    prompt += '\nQueued patterns:\n';
-    queue.forEach((p, i) => {
-      const preview = p.pattern.substring(0, 60);
-      prompt += `${i + 1}. ${p.bars} bars - ${preview}...\n`;
-    });
+  if (energy) {
+    const warning = (energy.status === 'dense' || energy.status === 'overloaded')
+      ? ' ⚠️ OVER BUDGET!'
+      : '';
+    prompt += ` | **Energy:** ${energy.current}/${energy.budget} (${energy.status})${warning}`;
+  }
+
+  prompt += '\n\n';
+
+  // Show layers
+  if (layers?.layers && Object.keys(layers.layers).length > 0) {
+    prompt += '**Active Layers:**\n';
+    for (const [name, layer] of Object.entries(layers.layers)) {
+      const status = layer.muted ? '(muted)' : `gain: ${layer.gain.toFixed(2)}`;
+      prompt += `- ${name}: ${status}\n  \`${layer.pattern.substring(0, 80)}${layer.pattern.length > 80 ? '...' : ''}\`\n`;
+    }
   } else {
-    prompt += '(Queue is empty - needs patterns!)\n';
+    prompt += '**No layers yet - create the initial composition!**\n';
+  }
+
+  // Show scenes
+  if (layers?.scenes && Object.keys(layers.scenes).length > 0) {
+    prompt += '\n**Saved Scenes:**\n';
+    for (const [name, scene] of Object.entries(layers.scenes)) {
+      const isCurrent = name === layers.currentScene ? ' (current)' : '';
+      prompt += `- ${name}${isCurrent}: ${scene.layerOrder?.length || 0} layers\n`;
+    }
+  }
+
+  if (hasAutomations) {
+    prompt += '\n*Automations in progress...*\n';
   }
 
   prompt += '\n';
 
+  // Show feedback
   if (feedback && feedback.length > 0) {
-    prompt += `## Recent Feedback (${feedback.length} items)\n\n`;
-
     const likes = feedback.filter(f => f.type === 'like').length;
     const dislikes = feedback.filter(f => f.type === 'dislike').length;
     const suggestions = feedback.filter(f => f.type === 'suggestion');
 
-    if (likes > 0) prompt += `👍 ${likes} likes\n`;
-    if (dislikes > 0) prompt += `👎 ${dislikes} dislikes\n`;
+    prompt += '## Feedback\n';
+    if (likes > 0) prompt += `+${likes} likes `;
+    if (dislikes > 0) prompt += `-${dislikes} dislikes `;
+    prompt += '\n';
 
     if (suggestions.length > 0) {
-      prompt += `\n💡 Suggestions:\n`;
-      suggestions.forEach(s => {
-        prompt += `- "${s.content}"\n`;
+      suggestions.slice(-3).forEach(s => {
+        prompt += `"${s.content}"\n`;
       });
     }
-
     prompt += '\n';
   }
 
-  // Generate appropriate instructions based on queue state
-  const needsPatterns = queueLength < targetQueueLength;
-  const patternsNeeded = targetQueueLength - queueLength;
+  const layerCount = layers?.layerOrder?.length || 0;
+  const sceneCount = layers?.sceneCount || 0;
+  const energyStatus = layers?.energy?.status || 'sparse';
+  const isOverBudget = energyStatus === 'dense' || energyStatus === 'overloaded';
 
-  if (needsPatterns) {
-    prompt += `## Task\n\nQueue needs ${patternsNeeded} more pattern(s).\n\n`;
+  if (isOverBudget) {
+    prompt += `## Task - ENERGY CRITICAL
 
-    if (queueLength === 0) {
-      prompt += `Generate ${targetQueueLength} patterns to fill the queue. Consider:\n`;
-      prompt += `- Musical progression and flow\n`;
-      prompt += `- Variety in bar lengths (4, 8, 16 bars)\n`;
-      prompt += `- Build energy and interest over time\n`;
-    } else {
-      prompt += `Add ${patternsNeeded} pattern(s) that continue the musical journey.\n`;
-    }
+⚠️ You are OVER BUDGET (${energyStatus}). You MUST reduce energy before anything else:
+- Fade out or mute 1-2 layers
+- Reduce gains on heavy layers
+- Remove a layer entirely
+- Create a breakdown moment
 
-    if (feedback && feedback.length > 0) {
-      prompt += `\nIncorporate the feedback into your new patterns!\n`;
-    }
+Music needs space to breathe. Strip back NOW.
+
+Return JSON array of operations.`;
+  } else if (layerCount === 0) {
+    prompt += `## Task
+Create an expressive initial composition with 2-3 layers that fits the style direction.
+- Build layers that complement each other
+- Use techniques that create variation over time
+- Stay within energy budget - start sparse, build gradually
+
+Return JSON array of operations.`;
+  } else if (energyStatus === 'full') {
+    prompt += `## Task
+Energy is nearly full (${energyStatus}). Be careful:
+- Consider a breakdown or reduction soon
+- If adding, mute or fade something else
+- Small refinements only, or strip back for contrast
+
+Return JSON array of operations.`;
+  } else if (sceneCount === 0 && layerCount >= 2) {
+    prompt += `## Task
+The composition has ${layerCount} layers (${energyStatus}). Consider:
+- **Save this as a scene** with define_scene
+- Build toward contrast - what comes next?
+- Add variation to existing layers
+
+Return JSON array of operations.`;
   } else {
-    prompt += `## Task\n\nQueue is healthy (${queueLength} patterns). `;
+    prompt += `## Task
+Energy: ${energyStatus}. Layers: ${layerCount}. Scenes: ${sceneCount}. Consider:
+- Transitioning between scenes for dynamics
+- Evolving layers within the current scene
+- Building and releasing tension
+- Responding to feedback
 
-    if (feedback && feedback.length > 0) {
-      prompt += `Consider feedback - should you modify the queue?\n`;
-      prompt += `- Strong positive feedback: Keep current direction\n`;
-      prompt += `- Negative feedback or suggestions: Clear and regenerate\n`;
-    } else {
-      prompt += `No action needed unless you want to refine upcoming patterns.\n`;
-    }
+Return JSON array of operations (or empty [] if it sounds good).`;
   }
-
-  prompt += `\nReturn JSON array of queue operations.`;
 
   return prompt;
 }
 
-/**
- * Extract queue operations from Claude's response
- */
-function extractQueueOperations(response) {
-  // Try to extract JSON from code block
+function extractOperations(response) {
   const jsonBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
 
   let jsonText;
   if (jsonBlockMatch) {
     jsonText = jsonBlockMatch[1].trim();
   } else {
-    // Try to find JSON array in the response
-    const arrayMatch = response.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-    if (arrayMatch) {
-      jsonText = arrayMatch[0];
-    } else {
-      jsonText = response.trim();
-    }
+    // Try to find JSON object or array
+    const objectMatch = response.match(/\{[\s\S]*\}/);
+    const arrayMatch = response.match(/\[[\s\S]*\]/);
+    jsonText = objectMatch ? objectMatch[0] : (arrayMatch ? arrayMatch[0] : response.trim());
   }
 
   try {
-    const operations = JSON.parse(jsonText);
+    const parsed = JSON.parse(jsonText);
 
-    if (!Array.isArray(operations)) {
-      console.error('Operations is not an array:', operations);
-      return [];
+    // Handle new format: { ops: [...], intent: "..." }
+    let operations;
+    let intent = null;
+
+    if (parsed.ops && Array.isArray(parsed.ops)) {
+      operations = parsed.ops;
+      intent = parsed.intent || null;
+    } else if (Array.isArray(parsed)) {
+      // Legacy format: just an array
+      operations = parsed;
+    } else {
+      console.error('Unexpected response format:', parsed);
+      return { operations: [], intent: null };
     }
 
-    // Validate operations
-    const validOperations = operations.filter(op => {
-      if (!op.action) {
-        console.warn('Operation missing action:', op);
-        return false;
-      }
+    // Valid operation types
+    const validOps = new Set([
+      'add', 'remove', 'update', 'mute', 'unmute', 'solo', 'unsolo',
+      'fade_in', 'fade_out', 'set_effect', 'set_gain', 'filter_sweep',
+      'set_bpm',
+      'define_scene', 'define_scene_layers', 'transition_to', 'apply_scene',
+      'update_scene_layer', 'add_to_scene', 'remove_from_scene'
+    ]);
 
-      if (['add', 'insert'].includes(op.action) && (!op.pattern || !op.bars)) {
-        console.warn('Add/insert operation missing pattern or bars:', op);
-        return false;
-      }
-
+    // Filter to only valid operations
+    const valid = operations.filter(op => {
+      if (!op.op) return false;
+      if (!validOps.has(op.op)) return false;
       return true;
     });
 
-    return validOperations;
+    return { operations: valid, intent };
   } catch (error) {
-    console.error('Failed to parse queue operations:', error);
+    console.error('Failed to parse operations:', error);
     console.error('Response:', response.substring(0, 500));
-    // Fallback: generate a simple add operation (uses default 120 BPM = 2 cps)
-    return [{
-      action: 'add',
-      pattern: `s("breaks:${Math.floor(Math.random() * 10)}").loopAt(2).fit().cps(2)`,
-      bars: 8
-    }];
+
+    // Fallback
+    return {
+      operations: [{
+        op: 'add',
+        layer: 'pad',
+        pattern: `s("swpad:<0 1 2 3>").slow(8).mask("<1 1 1 [1 0.5]>")`,
+        gain: 0.6,
+        effects: { room: 0.8, delay: 0.2 }
+      }],
+      intent: "Finding the first voice"
+    };
   }
 }

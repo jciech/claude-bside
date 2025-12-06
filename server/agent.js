@@ -1,6 +1,6 @@
-import { generateQueueOperations } from './claude.js';
+import { generateDslOperations } from './claude.js';
 import { StyleMemory } from './memory.js';
-import { randomUUID } from 'crypto';
+import { DslManager } from './dsl/index.js';
 
 export class MusicAgent {
   constructor(io, state, queueProcessor) {
@@ -8,20 +8,16 @@ export class MusicAgent {
     this.state = state;
     this.queueProcessor = queueProcessor;
     this.styleMemory = new StyleMemory();
+    this.dsl = new DslManager(state.tempo.bpm);
     this.isRunning = false;
     this.generationInterval = null;
     this.lastMajorChange = Date.now();
 
     // Configuration
-    this.GENERATION_INTERVAL = 20000; // 20 seconds - check queue and generate if needed
+    this.GENERATION_INTERVAL = 20000; // 20 seconds
     this.MAJOR_CHANGE_FEEDBACK_THRESHOLD = 2;
-    this.MIN_QUEUE_LENGTH = 3; // Minimum patterns to maintain
-    this.TARGET_QUEUE_LENGTH = 5; // Target queue length
   }
 
-  /**
-   * Start the agentic loop
-   */
   async start() {
     if (this.isRunning) {
       console.log('Agent already running');
@@ -31,23 +27,20 @@ export class MusicAgent {
     console.log('🤖 Starting music agent...');
     this.isRunning = true;
 
-    // Generate initial queue if empty
-    if (this.state.patternQueue.length === 0) {
-      console.log('📝 Generating initial queue...');
-      await this.performQueueUpdate('initial');
+    // Generate initial layers if empty
+    if (this.dsl.getLayerNames().length === 0) {
+      console.log('📝 Generating initial layers...');
+      await this.performUpdate('initial');
     }
 
-    // Schedule queue updates
+    // Schedule periodic updates
     this.generationInterval = setInterval(() => {
-      this.performQueueUpdate('periodic');
+      this.performUpdate('periodic');
     }, this.GENERATION_INTERVAL);
 
-    console.log(`✅ Agent started (checking queue every ${this.GENERATION_INTERVAL/1000}s)`);
+    console.log(`✅ Agent started (updating every ${this.GENERATION_INTERVAL / 1000}s)`);
   }
 
-  /**
-   * Stop the agentic loop
-   */
   stop() {
     if (this.generationInterval) {
       clearInterval(this.generationInterval);
@@ -58,34 +51,22 @@ export class MusicAgent {
     console.log('🛑 Agent stopped');
   }
 
-  /**
-   * Process feedback and potentially update the queue
-   */
   async processFeedback(feedback) {
-    // Update style memory using the pattern snapshot from when feedback was given
     this.styleMemory.processFeedback(feedback);
 
-    // Check if we should regenerate based on feedback
     const recentFeedback = this.getRecentFeedback();
     const feedbackSinceLastChange = recentFeedback.filter(
       f => f.timestamp > this.lastMajorChange
     );
 
-    const shouldRegenerateQueue = this.shouldRegenerateQueue(feedbackSinceLastChange);
-
-    if (shouldRegenerateQueue) {
-      console.log('🎯 Queue regeneration triggered by feedback');
-      // Clear queue and regenerate
-      this.clearQueue();
-      await this.performQueueUpdate('feedback');
+    if (this.shouldTriggerUpdate(feedbackSinceLastChange)) {
+      console.log('🎯 Update triggered by feedback');
+      await this.performUpdate('feedback');
       this.lastMajorChange = Date.now();
     }
   }
 
-  /**
-   * Determine if queue should be regenerated based on feedback
-   */
-  shouldRegenerateQueue(recentFeedback) {
+  shouldTriggerUpdate(recentFeedback) {
     if (recentFeedback.length < this.MAJOR_CHANGE_FEEDBACK_THRESHOLD) {
       return false;
     }
@@ -94,140 +75,102 @@ export class MusicAgent {
     const dislikes = recentFeedback.filter(f => f.type === 'dislike').length;
     const suggestions = recentFeedback.filter(f => f.type === 'suggestion').length;
 
-    // Regenerate queue if:
-    // - More dislikes than likes
-    // - Or we have explicit suggestions
     return dislikes > likes || suggestions >= 2;
   }
 
-  /**
-   * Perform queue update - generate patterns based on queue state
-   */
-  async performQueueUpdate(updateType = 'periodic') {
+  async performUpdate(updateType = 'periodic') {
     if (!this.isRunning && updateType !== 'initial') return;
 
-    const queueLength = this.state.patternQueue.length;
-    const shouldGenerate = updateType === 'initial' || queueLength < this.MIN_QUEUE_LENGTH;
-
-    if (!shouldGenerate) {
-      console.log(`📊 Queue OK (${queueLength} patterns)`);
-      return;
-    }
-
-    console.log(`🎵 Generating queue updates (current: ${queueLength})...`);
+    console.log(`🎵 Generating DSL operations (${updateType})...`);
 
     try {
       const context = {
-        currentPattern: this.state.currentPattern,
-        queue: this.state.patternQueue,
-        queueLength: queueLength,
-        targetQueueLength: this.TARGET_QUEUE_LENGTH,
-        tempo: this.state.tempo
+        layers: this.dsl.getState().state,
+        currentBar: this.dsl.getCurrentBar(),
+        tempo: this.state.tempo,
+        hasAutomations: this.dsl.hasActiveAutomations(),
       };
 
       const recentFeedback = this.getRecentFeedback(10);
       const styleSummary = this.styleMemory.getSummary();
 
-      const operations = await generateQueueOperations(context, recentFeedback, styleSummary);
+      const { operations, intent } = await generateDslOperations(context, recentFeedback, styleSummary);
 
-      this.executeQueueOperations(operations);
-    } catch (error) {
-      console.error('Error generating queue updates:', error);
-    }
-  }
+      if (operations && operations.length > 0) {
+        const result = this.dsl.applyOperations(operations);
 
-  /**
-   * Execute queue operations returned by Claude
-   */
-  executeQueueOperations(operations) {
-    if (!Array.isArray(operations)) {
-      console.error('Invalid operations format');
-      return;
-    }
-
-    for (const op of operations) {
-      switch (op.action) {
-        case 'add':
-          this.addPattern(op.pattern, op.bars);
-          break;
-        case 'insert':
-          this.insertPattern(op.index, op.pattern, op.bars);
-          break;
-        case 'remove':
-          this.removePattern(op.id);
-          break;
-        case 'replace':
-          this.replacePattern(op.id, op.pattern, op.bars);
-          break;
-        case 'clear':
-          this.clearQueue();
-          break;
-        default:
-          console.warn(`Unknown operation: ${op.action}`);
+        if (result.ok && result.compiled) {
+          console.log(`✨ Applied ${operations.length} operations`);
+          if (intent) console.log(`💭 Intent: "${intent}"`);
+          this.emitPatternUpdate(result.compiled, intent);
+        } else if (result.errors.length > 0) {
+          console.warn('DSL operation errors:', result.errors);
+        }
       }
+    } catch (error) {
+      console.error('Error generating DSL operations:', error);
     }
-
-    console.log(`✨ Queue updated: ${this.state.patternQueue.length} patterns`);
-  }
-
-  addPattern(pattern, bars) {
-    const patternObj = {
-      id: randomUUID(),
-      pattern,
-      bars,
-      addedAt: Date.now()
-    };
-    this.state.patternQueue.push(patternObj);
-  }
-
-  insertPattern(index, pattern, bars) {
-    const patternObj = {
-      id: randomUUID(),
-      pattern,
-      bars,
-      addedAt: Date.now()
-    };
-    this.state.patternQueue.splice(index, 0, patternObj);
-  }
-
-  removePattern(id) {
-    this.state.patternQueue = this.state.patternQueue.filter(p => p.id !== id);
-  }
-
-  replacePattern(id, pattern, bars) {
-    const index = this.state.patternQueue.findIndex(p => p.id === id);
-    if (index !== -1) {
-      this.state.patternQueue[index] = {
-        id,
-        pattern,
-        bars,
-        addedAt: Date.now()
-      };
-    }
-  }
-
-  clearQueue() {
-    this.state.patternQueue = [];
   }
 
   /**
-   * Get recent feedback
+   * Called by queueProcessor on each bar tick
    */
+  tick(bar) {
+    const result = this.dsl.tick(bar);
+
+    if (result.compiled) {
+      this.emitPatternUpdate(result.compiled);
+    }
+
+    return result;
+  }
+
+  emitPatternUpdate(compiled, intent = null) {
+    const layerState = this.dsl.getState().state;
+
+    // Update state for feedback attribution
+    this.state.currentPattern = {
+      id: `dsl-${Date.now()}`,
+      pattern: compiled,
+      bars: 4,
+      startedAt: Date.now(),
+      endsAt: Date.now() + (4 * this.state.tempo.barDuration),
+    };
+
+    // Send layer state to clients
+    this.io.emit('layer-update', {
+      layerState: {
+        layers: layerState.layers,
+        layerOrder: layerState.layerOrder,
+        bpm: this.state.tempo.bpm,
+        solo: layerState.solo,
+        scenes: layerState.scenes,
+        currentScene: layerState.currentScene,
+        sceneCount: layerState.sceneCount,
+      },
+      compiled,
+      intent, // Artistic commentary
+      timestamp: Date.now(),
+    });
+  }
+
   getRecentFeedback(count = 10) {
     return this.state.feedback.slice(-count);
   }
 
-  /**
-   * Get style memory summary
-   */
   getStyleSummary() {
     return this.styleMemory.getSummary();
   }
 
-  /**
-   * Export style profile
-   */
   exportStyleProfile() {
     return this.styleMemory.exportProfile();
+  }
+
+  getDslState() {
+    return this.dsl.getState();
+  }
+
+  getLastPattern() {
+    return this.dsl.getLastPattern();
   }
 }

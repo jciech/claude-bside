@@ -15,7 +15,11 @@
       "Bash(find:*)",
       "Bash(grep:*)",
       "WebFetch(domain:claude.ai)",
-      "WebFetch(domain:anthropic.com)"
+      "WebFetch(domain:anthropic.com)",
+      "Bash(cargo new:*)",
+      "Bash(cargo build:*)",
+      "Bash(xargs cat:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": [],
     "ask": []
