@@ -260,11 +260,17 @@ describe('requests', () => {
     sim.crowd.request(b!.socketId, { text: 'more jazz' }, sim.now);
     const cello = sim.crowd.request(c!.socketId, { text: 'a cello' }, sim.now);
     if (!jazz.ok || !cello.ok) throw new Error('request failed');
+    const pushes = sim.broadcaster.log.length;
     const summary = sim.crowd.summary(sim.baseline, sim.now);
     expect(summary.requests.map((r) => r.id)).toEqual([jazz.id, cello.id]);
     expect(summary.requests[0]).toMatchObject({ text: 'jazz', supporters: 2 });
     expect(summary.requests[0]!.support).toBeGreaterThan(summary.requests[1]!.support);
+    // Summarising is a read (previews and the autopilot see requests too); only a composer's turn marks them.
+    expect(cards(sim, a!.listenerId)[0]!.status).toBe('received');
+    expect(sim.broadcaster.log.length).toBe(pushes);
+    sim.crowd.markShown(summary.requests.map((r) => r.id));
     expect(cards(sim, a!.listenerId)[0]!.status).toBe('considered');
+    expect((sim.broadcaster.last('requests', b!.listenerId) as RequestCard[])[0]!.status).toBe('considered');
     expect(sim.crowd.hasRequest(jazz.id)).toBe(true);
     expect(sim.crowd.hasRequest('rq-nope')).toBe(false);
 
@@ -285,6 +291,32 @@ describe('requests', () => {
     expect(cards(sim, a!.listenerId)[0]!.status).toBe('playing');
     sim.crowd.markSectionPlayed('ep-7');
     expect(cards(sim, a!.listenerId)[0]!.status).toBe('played');
+  });
+
+  it('markShown only moves undecided requests, and ignores unknown ids', () => {
+    const { sim, ls } = room();
+    const r = sim.crowd.request(ls[0]!.socketId, { text: 'tabla' }, sim.now);
+    if (!r.ok) throw new Error('request failed');
+    sim.crowd.applyDecisions([{ requestId: r.id, status: 'declined', publicReply: 'Not tonight.', sectionId: null }]);
+    const pushes = sim.broadcaster.log.length;
+    sim.crowd.markShown([r.id, 'rq-nope']);
+    expect(cards(sim, ls[0]!.listenerId)[0]!.status).toBe('declined');
+    expect(sim.broadcaster.log.length).toBe(pushes);
+    expect(sim.crowd.summary(sim.baseline, sim.now).requests).toEqual([]);
+  });
+
+  it('a request only a preview or the autopilot saw still gets the "not reached the composer" note', () => {
+    const { sim, ls } = room();
+    const seen = sim.crowd.request(ls[0]!.socketId, { text: 'tabla' }, sim.now);
+    const previewed = sim.crowd.request(ls[1]!.socketId, { text: 'a cello' }, sim.now);
+    if (!seen.ok || !previewed.ok) throw new Error('request failed');
+    sim.crowd.summary(sim.baseline, sim.now);
+    sim.crowd.markShown([seen.id]);
+    sim.crowd.start({ cycle: () => sim.cycle, needle: () => NEEDLE });
+    sim.time.advance(5 * 60_000 + 10_000);
+    const notes = sim.broadcaster.log.filter((e) => e.event === 'note');
+    expect(notes.map((n) => n.to)).toEqual([ls[1]!.listenerId]);
+    sim.crowd.stop();
   });
 
   it('expire after 15 minutes undecided, with a private note after 5 minutes unseen', () => {

@@ -1,5 +1,5 @@
 // Crowd-steering scenarios, ported from research/scratch-steering/sim-steer.mjs and re-run with
-// the ARCHITECTURE §8 parameters: τ = clamp(6 + 12·ln(1+N), 8, 60) s, slew = max(0.025, 0.12/√N)/s.
+// the ARCHITECTURE §8 parameters: τ = clamp(2 + 6·ln(1+N), 6, 60) s, slew = max(0.025, 0.12/√N)/s.
 // 120 BPM: 1 bar = 2 s. Listeners are warmed up (trust 1) unless a scenario says otherwise.
 import { describe, expect, it } from 'vitest';
 import type { CrowdSignal } from '../../src/server/types.ts';
@@ -17,9 +17,12 @@ const bendBaseline = (sim: Sim) => (s: CrowdSignal) => {
 
 describe('smoothing parameters', () => {
   it('match ARCHITECTURE §8', () => {
-    expect(roomTauSec(1)).toBeCloseTo(6 + 12 * Math.log(2));
-    expect(roomTauSec(40)).toBeCloseTo(6 + 12 * Math.log(41));
-    expect(roomTauSec(1000)).toBe(60);
+    expect(roomTauSec(0)).toBe(6);
+    expect(roomTauSec(1)).toBeCloseTo(2 + 6 * Math.log(2));
+    expect(roomTauSec(1)).toBeCloseTo(6.16, 2);
+    expect(roomTauSec(10)).toBeCloseTo(16.4, 1);
+    expect(roomTauSec(1000)).toBeCloseTo(43.45, 2);
+    expect(roomTauSec(1e6)).toBe(60);
     expect(roomSlewPerSec(1)).toBeCloseTo(0.12);
     expect(roomSlewPerSec(16)).toBeCloseTo(0.03);
     expect(roomSlewPerSec(400)).toBe(0.025);
@@ -36,11 +39,27 @@ describe('A. solo listener', () => {
       if (t === 0) sim.pad(solo!, 1, 1, true);
       at[t] = sim.pull().x;
     });
-    // τ(1) = 14.3 s: moving after 1 s, half-way at 10 s, ≈ 0.8 by 25 s.
-    expect(at[2]).toBeGreaterThan(0.06);
-    expect(at[5]).toBeGreaterThan(0.25);
-    expect(at[10]).toBeGreaterThan(0.45);
-    expect(at[25]).toBeGreaterThan(0.78);
+    // τ(1) ≈ 6.2 s under a 0.12/s slew: moving at once, half-way within 5 s, ≈ 0.8 at 10 s.
+    expect(at[1]).toBeGreaterThan(0.1);
+    expect(at[5]).toBeGreaterThan(0.5);
+    expect(at[10]).toBeGreaterThan(0.75);
+    expect(at[25]).toBeGreaterThan(0.9);
+  });
+
+  it('glides rather than jumps when the puck is flung across the pad', () => {
+    const sim = new Sim();
+    const [solo] = sim.join(1);
+    sim.warmUp();
+    sim.run(60, () => sim.pad(solo!, -1, -1, true));
+    const at = [sim.pull().x];
+    sim.run(20, () => {
+      if (at.length === 1) sim.pad(solo!, 1, 1, true);
+      at.push(sim.pull().x);
+    });
+    const steps = at.slice(1).map((x, i) => x - at[i]!);
+    expect(at[0]).toBeLessThan(-0.9);
+    expect(Math.max(...steps)).toBeLessThanOrEqual(roomSlewPerSec(1) + 1e-9);
+    expect(at.at(-1)).toBeGreaterThan(0.5); // most of the way across within 20 s
   });
 
   it('one gesture bends the plan once, then relaxes back to centre', () => {
@@ -119,8 +138,8 @@ describe('C. a quarter of the room pushes', () => {
     expect(sim.count('replan-pressure')).toBe(1);
     const replan = sim.signals[0]!;
     expect(replan).toMatchObject({ type: 'replan-pressure', axis: 'brightness' });
-    expect(replan.t).toBeGreaterThan(60);
-    expect(replan.t).toBeLessThan(130);
+    expect(replan.t).toBeGreaterThan(50);
+    expect(replan.t).toBeLessThan(90);
   });
 });
 
@@ -176,14 +195,15 @@ describe('E. sybils', () => {
 });
 
 describe('K. whiplash', () => {
-  it('half the room flipping every minute causes zero replans', () => {
+  // Holding one way for ~55 s from rest is sustained consensus (C2), so the room flips faster than that.
+  it('half the room flipping every 40 s causes zero replans', () => {
     const sim = new Sim();
     const flippers = sim.join(40).slice(0, 20);
     sim.warmUp();
     let swing = 0;
     sim.run(360, (t) => {
       if (t % 10 === 0) {
-        const v = Math.floor(t / 60) % 2 ? 0.9 : -0.9;
+        const v = Math.floor(t / 40) % 2 ? 0.9 : -0.9;
         for (const l of flippers) sim.pad(l, v, v, true);
       }
       swing = Math.max(swing, Math.abs(sim.pull().x));

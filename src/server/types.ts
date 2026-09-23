@@ -26,9 +26,11 @@ import type {
   Hello,
   KeepInput,
   LinerNote,
+  Nack,
   PadInput,
   PadPoint,
   ReactInput,
+  RequestAck,
   RequestCard,
   RequestInput,
   RequestStatus,
@@ -149,9 +151,11 @@ export interface RoomClock {
 }
 
 // ─── Crowd (src/server/room/crowd.ts) ───────────────────────────────────────────────────────────
+// Factory: createCrowd({ broadcaster, config, store, log, now?, timers? }): CrowdRuntime
 // Owns listener identity/weights (trust, presence, per-network caps), rate limits, pad aggregation,
-// keep ballots, reactions, requests and forks. Emits `crowd` (4 Hz), and per-listener `fork` and
-// `requests` through the Broadcaster. Never calls the conductor; the conductor polls tick().
+// keep ballots, reactions, requests and forks. Emits `crowd` frames, and per-listener `fork`,
+// `requests` and system notes through the Broadcaster. Never calls the conductor: the conductor
+// polls tick() once per bar and reads summary()/pull(); the socket layer feeds it listener input.
 
 export type CrowdSignal =
   | { type: 'replan-pressure'; axis: 'brightness' | 'intensity'; pressure: number }
@@ -160,15 +164,14 @@ export type CrowdSignal =
   | { type: 'bored' }
   | { type: 'request-surge'; requestId: string };
 
-export interface Nack {
-  event: string;
-  reason: string;
-}
+export type { Nack };
 
 export interface JoinResult {
   listenerId: string;
   hue: number;
   token: string;
+  /** This client is sampled for audio telemetry (RoomSnapshot.telemetry). */
+  telemetry: boolean;
 }
 
 export interface Crowd {
@@ -178,14 +181,24 @@ export interface Crowd {
   pad(socketId: string, p: PadInput, nowMs: number): Nack | null;
   keep(socketId: string, k: KeepInput, cycle: number, nowMs: number): Nack | null;
   react(socketId: string, r: ReactInput, cycle: number, nowMs: number): Nack | null;
-  request(socketId: string, r: RequestInput, nowMs: number): { ok: true; id: string } | { ok: false; error: string };
+  request(socketId: string, r: RequestInput, nowMs: number): RequestAck;
   vote(socketId: string, v: VoteInput, nowMs: number): Nack | null;
   telemetry(socketId: string, t: Telemetry, nowMs: number): Nack | null;
 
   /** Once per bar: smoothing, ballots, replan hysteresis. Returns signals for the conductor. */
   tick(bar: number, nowMs: number, baseline: { intensity: number; brightness: number }): CrowdSignal[];
   frame(cycle: number, needle: PadPoint): CrowdFrame;
+  /**
+   * The room for a TurnContext, including the top undecided requests. A read: it changes no request
+   * and sends nothing, so previews and autopilot turns can call it freely (see markShown).
+   */
   summary(baseline: { intensity: number; brightness: number }, nowMs: number): CrowdSummary;
+  /**
+   * A real composer (claude or external) was just handed these requests in a planning request:
+   * undecided ones become 'considered' (their supporters get fresh cards) and count as seen, so they
+   * get no "hasn't reached the composer" note. Never called for autopilot turns or previews.
+   */
+  markShown(requestIds: string[]): void;
   /** Smoothed room pull (-1..1 per axis) and how confidently it is held (for macros). */
   pull(): { point: PadPoint; confidence: number; listeners: number };
   audibleListeners(nowMs: number): number;
@@ -217,6 +230,31 @@ export interface Crowd {
   requestCardsFor(listenerId: string): RequestCard[];
   forkFor(listenerId: string): ForkState | null;
   listenerIdOf(socketId: string): string | null;
+}
+
+/** What the crowd's 4 Hz pump reads each step. */
+export interface CrowdSource {
+  cycle(): number;
+  /** Conductor.needle(), passed in so the crowd never holds the conductor. */
+  needle(): PadPoint;
+}
+
+/**
+ * The crowd plus its lifecycle, which only main.ts drives (the conductor sees a plain Crowd):
+ * start() after conductor.start() and clock.start(); on shutdown stop(), then persist() once the
+ * conductor has stopped.
+ */
+export interface CrowdRuntime extends Crowd {
+  /**
+   * Starts the pump (every 250 ms): smoothing; a `crowd` frame when it changed, else every 5 s;
+   * coalesced fork tallies (≤ 1 per second); housekeeping every 5 s (request expiry and "not seen"
+   * notes, forgetting listeners gone 10 min, identity persistence once a minute). Idempotent;
+   * a second call only replaces the source.
+   */
+  start(source: CrowdSource): void;
+  stop(): void;
+  /** Writes accrued listener trust to the store (identity.v1). */
+  persist(): void;
 }
 
 // ─── Ledger (src/server/conductor/ledger.ts) ────────────────────────────────────────────────────

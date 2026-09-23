@@ -283,6 +283,18 @@ describe('Stay and Move on in the room', () => {
     expect(msAtCycle(tl, next2!.startCycle) - msAtCycle(tl, floor!.startCycle)).toBe(40 * 2000);
   });
 
+  it('a third Stay is refused as the limit (max), not as a lock', async () => {
+    const room = await playing();
+    const floor = sectionsOf(room)[1]!;
+    for (let i = 0; i < 3; i++) {
+      room.crowd.queued.push([{ type: 'keep', direction: 1, sectionId: floor.id }]);
+      await room.clock.advance(2000);
+    }
+    expect(sectionsOf(room).find((s) => s.id === floor.id)!.jumps).toHaveLength(2);
+    expect(room.crowd.called('consumeKeep')).toHaveLength(2);
+    expect(room.crowd.called('setKeepPending').at(-1)![0]).toMatchObject({ kind: 'extend', blocked: 'max', atCycle: null });
+  });
+
   it('a Stay that can no longer be made before the lock is refused and reported', async () => {
     const room = await playing(16);
     const floor = sectionsOf(room)[1]!;

@@ -1,11 +1,12 @@
 // What the UI holds on to: the engine, its clock, the stores the room writes, and the listener's
 // outgoing gestures. Implemented by the socket connection and by the offline mock room.
 import type { DockReaction } from '../../shared/music.ts';
-import type { PadPoint } from '../../shared/protocol.ts';
+import type { PadPoint, RequestAck } from '../../shared/protocol.ts';
 import type { ClockSync, Engine } from '../engine/types.ts';
 import type { RoomStores } from '../ui/stores.ts';
 
-export type RequestResult = { ok: true; id: string } | { ok: false; error: string };
+/** The server's ack, or a refusal before it answered: not connected yet, or no answer in time. */
+export type RequestResult = RequestAck | { ok: false; error: 'offline' | 'timeout' };
 
 export interface RoomActions {
   /** The listener's puck. Throttled to ≤ 4 Hz while `active`; a release is always sent. */

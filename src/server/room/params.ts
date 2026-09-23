@@ -73,7 +73,7 @@ export const CROWD = {
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
 /** EMA time constant of the room pull: a solo listener moves it in seconds, a big room deliberately. */
-export const roomTauSec = (listeners: number): number => clamp(6 + 12 * Math.log(1 + listeners), 8, 60);
+export const roomTauSec = (listeners: number): number => clamp(2 + 6 * Math.log(1 + listeners), 6, 60);
 
 /** Maximum movement of the room pull per second, per axis. */
 export const roomSlewPerSec = (listeners: number): number => Math.max(0.025, 0.12 / Math.sqrt(Math.max(1, listeners)));

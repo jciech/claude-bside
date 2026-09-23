@@ -217,7 +217,7 @@ export function createFakeCrowd(): FakeCrowd {
     called(method) {
       return crowd.calls.filter((c) => c.method === method).map((c) => c.args);
     },
-    join: () => ({ listenerId: 'l', hue: 0, token: 't' }),
+    join: () => ({ listenerId: 'l', hue: 0, token: 't', telemetry: false }),
     leave() {},
     heartbeat: () => null,
     pad: () => null,
@@ -256,6 +256,7 @@ export function createFakeCrowd(): FakeCrowd {
       promises: [],
       forkResult: null,
     }),
+    markShown: (...args) => void crowd.calls.push({ method: 'markShown', args }),
     pull: () => ({ point: crowd.pullPoint, confidence: crowd.confidence, listeners: crowd.listeners }),
     audibleListeners: () => crowd.listeners,
     telemetryDigest: () => null,

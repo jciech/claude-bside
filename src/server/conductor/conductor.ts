@@ -1058,6 +1058,8 @@ export function createConductor(deps: ConductorDeps): Conductor {
     lastAuthor = choice.author;
     statusNote = choice.note;
     if (choice.author === 'claude') composeStarts.push(now);
+    // Only a real composer's turn counts as the room's requests reaching the composer.
+    if (choice.author !== 'scripted') crowd.markShown(context.crowd.requests.map((r) => r.id));
     log.info('conductor: planning', { request: id, author: choice.author, kind, reasons, target: t.target, softInSec: Math.round((t.soft - now) / 1000) });
     emit('request', request);
     emitStatus(true);

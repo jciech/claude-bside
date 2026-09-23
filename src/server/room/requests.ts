@@ -93,30 +93,34 @@ export class RequestBook {
     return n;
   }
 
-  /** The top undecided requests by support; they become 'considered'. Returns them and the ones whose status changed. */
-  present(weightOf: WeightOf, nowMs: number): { rows: CrowdSummary['requests']; changed: RequestRecord[] } {
-    const ranked = this.undecided()
+  /** The top undecided requests by support, for a turn context. Changes nothing. */
+  top(weightOf: WeightOf, nowMs: number): CrowdSummary['requests'] {
+    return this.undecided()
       .map((r) => ({ r, support: this.support(r, weightOf, nowMs) }))
       .sort((a, b) => b.support - a.support || a.r.createdAt - b.r.createdAt)
-      .slice(0, P.topK);
+      .slice(0, P.topK)
+      .map(({ r, support }) => ({
+        id: r.id,
+        text: r.text,
+        support: Math.round(support * 100) / 100,
+        supporters: r.supporters.size,
+        ageSec: Math.round((nowMs - r.createdAt) / 1000),
+      }));
+  }
+
+  /** A composer was shown these: undecided ones count as seen, and 'received' → 'considered'. Returns those whose status changed. */
+  markShown(ids: Iterable<string>, nowMs: number): RequestRecord[] {
     const changed: RequestRecord[] = [];
-    for (const { r } of ranked) {
+    for (const id of new Set(ids)) {
+      const r = this.#records.get(id);
+      if (!r || !UNDECIDED.has(r.status)) continue;
       r.shownAt ??= nowMs;
       if (r.status === 'received') {
         r.status = 'considered';
         changed.push(r);
       }
     }
-    return {
-      rows: ranked.map(({ r, support }) => ({
-        id: r.id,
-        text: r.text,
-        support: Math.round(support * 100) / 100,
-        supporters: r.supporters.size,
-        ageSec: Math.round((nowMs - r.createdAt) / 1000),
-      })),
-      changed,
-    };
+    return changed;
   }
 
   promises(nowMs: number): CrowdSummary['promises'] {

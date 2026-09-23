@@ -230,9 +230,11 @@ describe('Stay / Move on', () => {
     }
   });
 
-  it('Stay at most twice', () => {
+  it('Stay at most twice, then reports the limit (max) rather than the lock', () => {
+    const once = prog('a', 0, { bars: 32, jumps: [{ atBar: 24, toBar: 16 }] });
+    expect(decideKeep({ current: once, next: null, direction: 1, timeline: tl, nowMs: now(4), nowCycle: 4 }).ok).toBe(true);
     const a = prog('a', 0, { bars: 32, jumps: [{ atBar: 24, toBar: 16 }, { atBar: 24, toBar: 16 }] });
-    expect(decideKeep({ current: a, next: null, direction: 1, timeline: tl, nowMs: now(4), nowCycle: 4 })).toMatchObject({ ok: false, blocked: 'locked' });
+    expect(decideKeep({ current: a, next: null, direction: 1, timeline: tl, nowMs: now(4), nowCycle: 4 })).toMatchObject({ ok: false, kind: 'extend', blocked: 'max' });
   });
 
   it('a Stay inside the lock window is refused', () => {

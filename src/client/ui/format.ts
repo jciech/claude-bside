@@ -1,7 +1,8 @@
 // Plain-language wording for everything the room shows: numbers, statuses and the crowd's state in
 // words (docs/DESIGN.md "Accessibility": no jargon, statuses in words). Pure.
 import { cpsToBpm, type SectionRole } from '../../shared/music.ts';
-import type { ComposerStatus, KeepPending, PadPoint, RequestStatus } from '../../shared/protocol.ts';
+import type { ComposerStatus, KeepPending, NackReason, PadPoint, RequestStatus } from '../../shared/protocol.ts';
+import type { RequestResult } from '../room/types.ts';
 
 /** Side 1 → "A", 2 → "B" … 27 → "AA". */
 export function sideLetter(side: number): string {
@@ -73,7 +74,9 @@ export const REQUEST_STATUS_LABEL: Record<RequestStatus, string> = {
 /** Statuses after which a request will not change any more. */
 export const REQUEST_FINAL: ReadonlySet<RequestStatus> = new Set(['declined', 'played', 'expired', 'merged']);
 
-const REQUEST_ERRORS: Record<string, string> = {
+export type RequestErrorCode = Extract<RequestResult, { ok: false }>['error'];
+
+const REQUEST_ERRORS: Record<RequestErrorCode, string> = {
   'too-early': 'Listen for a few more seconds first, then ask.',
   'rate-limited': 'One ask a minute. Try again shortly.',
   'room-busy': 'Lots of asks right now. Try again in a moment.',
@@ -81,13 +84,16 @@ const REQUEST_ERRORS: Record<string, string> = {
   invalid: 'That didn’t go through. Try rephrasing.',
   'hello-first': 'Still joining the room. Try again in a moment.',
   offline: 'You’re offline. Your ask will need resending.',
+  timeout: 'No answer from the room. Try again.',
 };
 
-export function requestErrorText(error: string): string {
+export function requestErrorText(error: RequestErrorCode): string {
+  // A newer server may send a code this client doesn't know yet.
   return REQUEST_ERRORS[error] ?? 'That didn’t go through. Try again.';
 }
 
-const NACK_TEXT: Record<string, string> = {
+/** What the dock and the vote card say when the server refuses a press; null says nothing. */
+const NACK_TEXT: Record<NackReason, string | null> = {
   'rate-limited': 'Easy — give it a second.',
   'heard-cycle': 'That landed too late to count.',
   'wrong-section': 'That track had already ended.',
@@ -95,9 +101,19 @@ const NACK_TEXT: Record<string, string> = {
   'too-early': 'Your presses start counting after a few seconds of listening.',
   closed: 'The vote has closed.',
   'no-fork': 'There’s no vote open right now.',
+  'invalid-option': null,
+  'unknown-event': null,
+  invalid: null,
+  internal: null,
+  'hello-first': null,
+  'room-full': null,
+  'too-many-tabs': null,
+  'not-sampled': null,
+  empty: null,
+  'room-busy': null,
 };
 
-export function nackText(reason: string): string | null {
+export function nackText(reason: NackReason): string | null {
   return NACK_TEXT[reason] ?? null;
 }
 
@@ -119,6 +135,8 @@ export function keepPendingText(p: KeepPending, nowCycle: number, endCycle: numb
       return left !== null ? `Too close to change — it ends in ${plural(left, 'bar')}` : 'Too close to the change to skip';
     case 'next-not-ready':
       return 'Claude is still lining up what comes next';
+    case 'max':
+      return 'Already held twice';
     case 'role':
       return 'This part of the side is going somewhere — it can’t repeat';
     case null:

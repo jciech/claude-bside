@@ -342,9 +342,11 @@ network (/24 for IPv4, /48 for IPv6, derived from the socket peer or `trustProxy
 (10 % ≈ 0.31, 25 % ≈ 0.57, 50 % ≈ 0.80). Diagnostics: turnout, Kish effective voices, consensus,
 split detection (reported to Claude as a split, not averaged into mush).
 
-**Smoothing.** EMA with τ = clamp(6 + 12·ln(1+N), 8, 60) s and a slew of max(0.025, 0.12/√N) per
-second: a solo listener hears the room move within seconds; a large room moves deliberately. Weights
-and network caps, not slowness, are what resist trolls.
+**Smoothing.** EMA with τ = clamp(2 + 6·ln(1+N), 6, 60) s (N present listeners: 6.2 s solo, 16 s
+for 10, 24 s for 40, 43 s for 1000) and a slew of max(0.025, 0.12/√N) per second: a solo listener's
+push from the centre reaches ≈ 0.8 of the way in 10 s, gliding at ≤ 0.12/s (a full sweep across the
+pad is slew-bound: ≈ 0.6 at 10 s, 0.8 at 15 s); a large room moves deliberately. Weights and network
+caps, not slowness, are what resist trolls.
 
 **Two speeds.**
 - *Fast lane* (deterministic mixer keyframes, ≤ 1 per bar, ramping over 1 bar for ≤ 3 listeners,
@@ -356,36 +358,52 @@ and network caps, not slowness, are what resist trolls.
   0.15 per plan (κ = 0.15 + 0.35·confidence), clamped to [0.25, 0.7] unless the movement is ambient.
 
 **Early replan** on strong, sustained consensus: pressure vs baseline > 0.45 for 16 bars (hysteresis
-resets below 0.25), Kish n_eff ≥ min(3, N), ≥ 32 bars since the last one. It replaces the provisional
+resets below 0.25), Kish n_eff ≥ min(3, N), ≥ 32 bars since the last one. Half a room of 10–200
+holding one direction from rest gets there after ≈ 45–65 s (120 BPM). It replaces the provisional
 section, never the locked ones.
 
-**Stay / Move on**: ballots carry the section they were heard in (dropped otherwise) and are cleared
-at every section start; smoothed with the same prior and τ = 10 s; |K| > 0.35 for 8 bars acts, if the
-change can still be made before the relevant lock point. Stay: one repeated phrase (max 2; never for
-intro, build or transition). Move on: jump to the final phrase at the next 8-bar line (a build may be
+**Stay / Move on**: one ballot per listener (the latest wins); ballots carry the section they were
+heard in (refused otherwise), are cleared at every section start and consumed once the conductor
+acts on them. A ballot fades with freshness exp(−age/90 s) and stops counting below 0.05 (after ≈ 4.5
+min); ballots are aggregated with the same silent-majority prior and smoothed with τ = 10 s. |K| >
+0.35 held for 8 bars, with a quorum of Kish n_eff ≥ min(2, N) among the ballots (a solo listener can
+act alone), acts if the change can still be made before the relevant lock point; the signal repeats
+every bar while the lean holds. Stay: one repeated phrase (at most 2 per section; never for intro,
+build or transition). Move on: jump to the final phrase at the next 8-bar line (a build may be
 shortened); with no successor committed, it requests a plan with reason `move-on`. `keepPending` in
 the crowd frame tells the dock what is happening ("moving on at bar 72", "this track ends in 6 bars
-anyway").
+anyway", "already held twice"); `blocked` is `min-length`, `next-not-ready`, `role`, `locked` (too
+close to a lock point) or `max` (already extended twice).
 
 **Reactions**: token buckets (`RATE_LIMITS` in `music.ts`), at most one counted per type per 4-bar
 window, attributed to the bar the listener heard (validated to lie within the last 8 bars). Rates
-per section become z-scores against a 15-minute baseline: 🔥 z ≥ 2 marks a loved moment; 💤 z ≥ 2
-raises novelty pressure; 😣 z ≥ 2 (or ≥ 20 % of listeners within 8 bars) applies a safety trim
-(−3 dB master, −3 dB high shelf, 16 bars).
+per section (weighted reactions per listener per minute) become z-scores against a 15-minute
+baseline; within a section's rate one listener counts for at most one reaction per type per minute
+(max(1, minutes) in all), so a single enthusiast can't manufacture a loved moment or a trim. A
+z-signal also needs ≥ min(2, N) distinct reporters. 🔥 z ≥ 2 marks a loved moment; 💤 z ≥ 2 raises
+novelty pressure (once per section); 😣 z ≥ 2 (or ≥ 20 % of listeners within 8 bars) applies a safety
+trim (−3 dB master, −3 dB high shelf, 16 bars). A repeat trim needs new evidence: at least one Too
+much pressed since the last trim, and 16 bars since it (the z test still counts the section's
+earlier presses; the 20 % test counts only new ones).
 
 **Requests**: sanitised (`sanitizeRequestText`), merged on a normalised key, support = Σ
-w·exp(−age/6 min); the top 5 undecided go to the composer, plus every open promise (next-movement /
-fork-option) whatever its support. Lifecycle: received → considered → planned / next-movement /
-fork-option / merged / declined → playing → played / expired (15 min). Raw text is shown only to its
-author; everyone sees the composer's paraphrase. Requests never shown to the composer within 5
-minutes get a system note. Rate: 1 per minute per listener, 30 per minute per room.
+w·exp(−age/6 min); the top 5 undecided go into every turn context, plus every open promise
+(next-movement / fork-option) whatever its support. Lifecycle: received → considered → planned /
+next-movement / fork-option / merged / declined → playing → played / expired (15 min). A request
+becomes *considered* only when a real composer (Claude or the external driver) is handed it in a
+planning request (`Crowd.markShown`); the autopilot, its fallbacks and `bside context` previews read
+the same summary without marking it. Raw text is shown only to its author; everyone sees the
+composer's paraphrase. Requests no composer was handed within 5 minutes get a system note. Rate: 1
+per minute per listener, 30 per minute per room.
 
 **Forks**: at most one every ~3 minutes (`rules.forkAllowed`); binding if the winner has ≥ 50 % with
 ≥ 20 % turnout, advisory at ≥ 40 % / 10 %, otherwise the composer's default. The fork shows which
 section will realise it and when it lands.
 
-These parameters were simulated (a troll pinning the pad for 5 minutes moves the room by 0.09;
-30 sockets from one subnet by 0.17; a flip-flopping half of the room causes zero replans).
+These parameters are simulated in `test/room/crowd-sim.test.ts` (a troll pinning the pad for 5
+minutes in a room of 40 moves it by 0.09; 30 sockets from one subnet by 0.17; half the room flipping
+every 40 s causes zero replans, while half the room holding one way for a minute is consensus and
+replans once).
 
 ## 9. Arc, dramaturgy and novelty
 

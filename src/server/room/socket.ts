@@ -8,6 +8,10 @@ import { RATE_LIMITS } from '../../shared/music.ts';
 import {
   CLIENT_EVENT_SCHEMAS,
   type ClientToServerEvents,
+  type ConnectError,
+  type Nack,
+  type NackReason,
+  type RequestAck,
   type RoomSnapshot,
   type ServerToClientEvents,
 } from '../../shared/protocol.ts';
@@ -144,7 +148,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
       notes: base.notes,
       requests: crowd.requestCardsFor(join.listenerId),
       composer: base.composer,
-      telemetry: (join as { telemetry?: unknown }).telemetry === true,
+      telemetry: join.telemetry,
       you: { hue: join.hue, token: join.token },
       sourceUrl: config.sourceUrl,
     };
@@ -152,11 +156,12 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
 
   // ─── Admission: caps before any listener state exists ─────────────────────────────────────────
   io.use((socket, next) => {
+    const refuse = (message: ConnectError) => next(new Error(message));
     const address = clientAddress({ remoteAddress: socket.request.socket.remoteAddress, headers: socket.handshake.headers }, config.trustProxy);
     const network = networkKey(address, config.ipv6Prefix);
-    if (sockets >= MAX_SOCKETS) return next(new Error('server-full'));
-    if ((perNetwork.get(network) ?? 0) >= config.maxSocketsPerNetwork) return next(new Error('too-many-connections'));
-    if (!connectRates.take(network, clock.now())) return next(new Error('rate-limited'));
+    if (sockets >= MAX_SOCKETS) return refuse('server-full');
+    if ((perNetwork.get(network) ?? 0) >= config.maxSocketsPerNetwork) return refuse('too-many-connections');
+    if (!connectRates.take(network, clock.now())) return refuse('rate-limited');
     socket.data = { address, network };
     sockets++;
     perNetwork.set(network, (perNetwork.get(network) ?? 0) + 1);
@@ -176,10 +181,10 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
     const clockProbes = createBucket(RATE_LIMITS.clock, clock.now());
     let dropped = 0;
 
-    const nack = (event: string, reason: string) => socket.emit('nack', { event: String(event).slice(0, 32), reason });
-    const ackOf = (args: unknown[]) => {
+    const nack = (event: string, reason: NackReason) => socket.emit('nack', { event: String(event).slice(0, 32), reason });
+    const ackOf = <T>(args: unknown[]) => {
       const last = args[args.length - 1];
-      return typeof last === 'function' ? (last as (res: unknown) => void) : null;
+      return typeof last === 'function' ? (last as (res: T) => void) : null;
     };
 
     // Gate every incoming packet: flood control, unknown events, hello first.
@@ -193,7 +198,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
       }
       if (typeof event !== 'string' || !EVENTS.has(event)) return nack(String(event), 'unknown-event');
       if (event !== 'hello' && listenerId === null) {
-        if (event === 'request') ackOf(args)?.({ ok: false, error: 'hello-first' });
+        if (event === 'request') ackOf<RequestAck>(args)?.({ ok: false, error: 'hello-first' });
         return nack(event, 'hello-first');
       }
       next();
@@ -218,7 +223,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
       return undefined;
     };
 
-    const reply = (event: string, result: { event: string; reason: string } | null) => {
+    const reply = (event: string, result: Nack | null) => {
       if (result) nack(result.event || event, result.reason);
     };
 
@@ -272,7 +277,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
     socket.on(
       'request',
       handle('request', (t, args) => {
-        const ack = ackOf(args);
+        const ack = ackOf<RequestAck>(args);
         const request = parse('request', args[0]);
         if (!request) return ack?.({ ok: false, error: 'invalid' });
         const result = crowd.request(socket.id, request, t);
@@ -300,7 +305,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
     socket.on(
       'clock',
       handle('clock', (t, args) => {
-        const ack = ackOf(args);
+        const ack = ackOf<number>(args);
         if (!ack) return nack('clock', 'invalid');
         if (!take(clockProbes, RATE_LIMITS.clock, t)) return nack('clock', 'rate-limited');
         ack(clock.now());
