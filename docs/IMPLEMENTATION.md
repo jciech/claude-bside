@@ -193,9 +193,14 @@ without a server.
 npm run test:e2e                                             # the real server (scripted, synth-only) + the built client
 node --disable-warning=ExperimentalWarning test/engine/browser/run.ts main sync bomb   # engine in Chromium: haps, gains, onsets, sync, density guard
 node --disable-warning=ExperimentalWarning test/lathe/browser/run.ts all ./lathe-shots  # record screenshots per viewport × tier, frame-time budget
+node --disable-warning=ExperimentalWarning scripts/record-room.ts --url http://localhost:3000 --minutes 5 --out room.webm
 ```
 
 The engine harness plays `test/fixtures/snapshot.json` through a real `AudioContext` and asserts on
 captured haps, channel gains and acoustic onsets; the lathe harness drives `createLathe` with a fake
 engine and checks main-thread busy time and worker frame times. Neither is part of `npm test`: run
 them when you touch the engine or the renderer.
+
+`scripts/record-room.ts` joins a running room in headless Chromium, drops the needle and records what
+the engine sends to the speakers (Opus/WebM), logging each track change with its timestamp. It
+records in real time. Listen to the result: tests prove the timing and levels, not the music.
