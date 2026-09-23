@@ -1,45 +1,54 @@
 # Implementation guide
 
-How the rebuild is split into modules that can be built in parallel. Read `docs/ARCHITECTURE.md`
-first; the contracts in `src/shared/*`, `src/server/types.ts`, `src/client/engine/types.ts` and
-`src/client/render/protocol.ts` are **frozen** — implement against them, don't edit them. If a
-contract is genuinely wrong or missing something, work around it locally (an adapter in your own
-directory) and report the exact change you need.
+How the code is organised: which module owns what, the factory each one exports, how they are wired,
+and how each is tested. Read `docs/ARCHITECTURE.md` first. The contracts in `src/shared/*`,
+`src/server/types.ts`, `src/client/engine/types.ts` and `src/client/render/protocol.ts` are
+normative: both sides of a boundary are written against them.
+
+## Changing a contract
+
+Contracts change deliberately, in one commit that also updates:
+
+- every implementation and consumer, including test fakes (`test/conductor/harness.ts`,
+  `test/integration/harness.ts`, `test/composer/fixtures.ts`, `test/lathe/browser` and
+  `src/client/room/mock.ts`);
+- the fixtures (`test/fixtures/snapshot.json` is a valid `RoomSnapshot`; `catalog.small.json` is a
+  valid `Catalog`);
+- the docs that describe it (ARCHITECTURE, COMPOSING for anything a composer sees).
+
+`npm run typecheck` catches most of the fallout. The composer's system prompt is prompt-cached, so
+a change to the Plan schema, the reference card or the catalog digest costs one cache miss.
 
 ## Ground rules
 
-- Only write inside the paths your module owns (table below), plus tests under `test/<module>/`.
-- Don't modify `package.json`, `tsconfig.json`, `vite.config.ts` or the contracts. All dependencies
-  are installed; if you truly need another one, stop and report it.
+- Keep each module inside the paths it owns (table below); tests go under `test/<module>/`.
 - Node runs TypeScript directly (type stripping): imports carry explicit `.ts` extensions, only
   erasable syntax (no `enum`, `namespace`, parameter properties), `import type` for types.
 - Server code that imports Strudel must be run with `--import ./src/server/node-hooks.ts` (the npm
   scripts do); worker threads call `registerStrudelHooks()` themselves and import Strudel
   dynamically. Under vitest, `vitest.config.ts` aliases `@kabelsalat/web`.
-- Fixtures: `test/fixtures/catalog.small.json` (a valid `Catalog`) and `test/fixtures/snapshot.json`
-  (a valid `RoomSnapshot` with two synth-only sections exercising knobs, a continuing carried part, a
-  rewritten part, a crossfade and a pickup). Use them until the real catalog exists.
-- Typecheck with `npx tsc --noEmit` and look only at errors in your own paths (others are mid-build).
-  Run your tests with `npx vitest run test/<module>`.
-- Headless Chromium is available (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`, `@playwright/test`
-  1.56.1). From the sandbox, the browser cannot reach raw.githubusercontent.com directly (proxy CA);
-  route those requests through Node (`page.route` → `fetch` → `route.fulfill`) when you need samples,
-  or use synth-only material.
-- Comment only what's non-obvious; match the surrounding style. No `{@html}`/`innerHTML` for any
-  text that came from a listener or a composer.
+- Headless Chromium is available here (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`). The sandboxed
+  browser can't reach raw.githubusercontent.com directly (proxy CA): route those requests through
+  Node (`page.route` → `fetch` → `route.fulfill`) when you need samples, or use synth-only material
+  (`BSIDE_AUTOPILOT=synth`).
+- Express's `sendFile` refuses paths containing a dot-directory, so the production server (and the
+  e2e suite) can't serve from a checkout under e.g. `.claude/worktrees/`; copy the tree elsewhere to
+  run e2e from a worktree, with a unique `E2E_PORT` and `CI=1`.
+- No `{@html}`/`innerHTML` for any text that came from a listener or a composer.
 
 ## Ownership and factories
 
-| Module | Owns | Must export |
+| Module | Owns | Tests |
 |---|---|---|
-| **strudel** | `src/strudel/**`, `src/server/check/**`, `scripts/gen-allowlist.ts` | see below |
-| **palette** | `palette/**`, `scripts/build-catalog.ts`, `scripts/render-audio.ts`, `test/fixtures/catalog.small.json` (may extend, must stay valid) | `palette/catalog.json`, vendored maps |
-| **room** | `src/server/main.ts`, `config.ts`, `log.ts`, `src/server/room/**`, `src/server/http/**`, `test/integration/**` | see below |
-| **conductor** | `src/server/conductor/**` | see below |
-| **composer** | `src/server/composer/**`, `src/cli/**` | see below |
-| **engine** | `src/client/engine/**` (except `types.ts`) | see below |
-| **lathe** | `src/client/render/**` (except `protocol.ts`) | see below |
-| **ui** | `src/client/index.html`, `src/client/main.ts`, `src/client/public/**`, `src/client/room/**`, `src/client/ui/**`, `e2e/**` | the app |
+| **strudel** | `src/strudel/**`, `src/server/check/**`, `scripts/gen-allowlist.ts` | `test/strudel/` |
+| **palette** | `palette/**`, `scripts/build-catalog.ts`, `scripts/render-audio.ts`, `test/fixtures/catalog.small.json` | `test/palette/` |
+| **room** | `src/server/main.ts`, `config.ts`, `log.ts`, `src/server/room/**`, `src/server/http/**` | `test/room/`, `test/integration/` |
+| **conductor** | `src/server/conductor/**` | `test/conductor/` |
+| **composer** | `src/server/composer/**`, `src/cli/**` | `test/composer/` |
+| **engine** | `src/client/engine/**` | `test/engine/` (+ `browser/run.ts`) |
+| **lathe** | `src/client/render/**` | `test/lathe/` (+ `browser/run.ts`) |
+| **ui** | `src/client/index.html`, `main.ts`, `public/**`, `room/**`, `ui/**` | `test/ui/`, `e2e/` |
+| **shared** | `src/shared/**` (the contracts) | `test/shared.test.ts`, `test/schedule.test.ts` |
 
 ### strudel
 
@@ -177,3 +186,16 @@ The Svelte app: `src/client/main.ts` mounts `ui/App.svelte`; `room/connection.ts
 telemetry when sampled) and a **mock room** (`?mock` in the URL: plays `test/fixtures/snapshot.json`
 advancing on a local clock, with fake crowd frames) so the whole UI can be developed and screenshot
 without a server.
+
+## Verifying beyond unit tests
+
+```bash
+npm run test:e2e                                             # the real server (scripted, synth-only) + the built client
+node --disable-warning=ExperimentalWarning test/engine/browser/run.ts main sync bomb   # engine in Chromium: haps, gains, onsets, sync, density guard
+node --disable-warning=ExperimentalWarning test/lathe/browser/run.ts all ./lathe-shots  # record screenshots per viewport × tier, frame-time budget
+```
+
+The engine harness plays `test/fixtures/snapshot.json` through a real `AudioContext` and asserts on
+captured haps, channel gains and acoustic onsets; the lathe harness drives `createLathe` with a fake
+engine and checks main-thread busy time and worker frame times. Neither is part of `npm test`: run
+them when you touch the engine or the renderer.
