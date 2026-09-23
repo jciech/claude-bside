@@ -11,6 +11,7 @@ import {
   nextPhraseLine,
   PHRASE_BARS,
   plannedPlayBars,
+  preRollBars,
   publishDeadlineMs,
   scoreBarAt,
   type ScoreShape,
@@ -125,10 +126,14 @@ export function place(input: PlacementInput): Placement | { error: string } {
   const anchor = kept[kept.length - 1] ?? null;
   const tl = rebuildTimeline(timeline, nowMs, kept);
 
-  const fits = (start: number, needPreload: boolean) => {
+  /** `firstPreRoll` replaces the first section's pre-roll (transition and pickups) with that many bars. */
+  const fits = (start: number, needPreload: boolean, firstPreRoll?: number) => {
     let at = start;
-    for (const shape of input.shapes) {
-      const placed = { startCycle: at, transitionIn: shape.transitionIn, parts: shape.parts };
+    for (const [i, shape] of input.shapes.entries()) {
+      const placed =
+        i === 0 && firstPreRoll !== undefined
+          ? { startCycle: at, transitionIn: { type: 'cut' as const, bars: 0 }, parts: [{ enterBar: -firstPreRoll }] }
+          : { startCycle: at, transitionIn: shape.transitionIn, parts: shape.parts };
       if (lockMs(tl, placed) <= nowMs + ACCEPT_MARGIN_MS) return false;
       if (needPreload && publishDeadlineMs(tl, placed) < nowMs + ACCEPT_MARGIN_MS) return false;
       at += shape.bars;
@@ -142,6 +147,21 @@ export function place(input: PlacementInput): Placement | { error: string } {
   let first: number;
   if (anchor && !cutsIn) first = Math.max(plannedEnd(anchor), nextPhraseLine(Math.floor(nowCycle) + 1, origin));
   else first = nextPhraseLine(Math.max(Math.floor(nowCycle) + 1, anchor ? anchor.startCycle + 1 : -Infinity), origin);
+
+  // Deadlines are worked out for a cut: after a section that must not vamp, a pre-roll that no longer
+  // reaches listeners in time is refused rather than placed late (the section would vamp meanwhile).
+  if (input.mode === 'horizon' && anchor && !anchor.vamp.allowed && input.shapes[0] && !fits(first, true)) {
+    const preRoll = preRollBars(input.shapes[0]);
+    let budget = -1;
+    for (let n = preRoll - 1; n >= 0 && budget < 0; n--) if (fits(first, true, n)) budget = n;
+    if (budget >= 0) {
+      return {
+        error:
+          `The section before it (${anchor.role}) must not vamp and ends at cycle ${plannedEnd(anchor)}; a ${preRoll}-bar pre-roll no longer reaches ` +
+          `listeners in time. Use a cut or a crossfade, or at most ${budget} bars of pre-roll (riser, breath, filter or pickups).`,
+      };
+    }
+  }
 
   for (let i = 0, c = first; i < MAX_LINES_SEARCHED; i++, c += PHRASE_BARS) {
     if (!fits(c, needPreload)) continue;

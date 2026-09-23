@@ -4,11 +4,12 @@
 // warnings for the scripted autopilot.
 import { fingerprintDistance, type Issue, type SectionCheck, type SectionFingerprint } from '../../shared/analysis.ts';
 import { PERCUSSIVE_ROLES, type PartRole, type SectionRole, type Span } from '../../shared/music.ts';
-import type { Plan, SectionPlan } from '../../shared/plan.ts';
+import type { Automation, Knob, Plan, SectionPlan } from '../../shared/plan.ts';
 import { BREATH_MAX_BARS, CROSSFADE_MAX_BARS } from '../../shared/schedule.ts';
 import { isPublicText } from '../../shared/text.ts';
 import { budgetSeconds, BUDGET_WINDOW_MS, FLOOR_BUDGET_S, isPeakSpan, maxRun, PEAK_BUDGET_S, runLength, type BudgetSpan } from './arc.ts';
 import type { ResolvedPart } from './compile.ts';
+import { laneValue, lanesFor, levelAt } from './knobs.ts';
 
 const err = (rule: string, message: string, path?: string, hint?: string): Issue => ({ severity: 'error', rule, message, ...(path ? { path } : {}), ...(hint ? { hint } : {}) });
 const warn = (rule: string, message: string, path?: string, hint?: string): Issue => ({ ...err(rule, message, path, hint), severity: 'warning' });
@@ -350,10 +351,62 @@ export interface DramaturgyEntry {
   tension: Span;
 }
 
+/** A part as the build rule reads its automation (carried knobs resolved). */
+export interface AutomatedPart {
+  level: number;
+  enterBar: number;
+  exitBar: number | null;
+  knobs: readonly Knob[];
+  automation: readonly Automation[];
+}
+
+/** The analyzer's spans compare the first and last 4 bars. */
+const EDGE_BARS = 4;
+
+/**
+ * The rise a section's automation lanes add, which its measured spans leave out (the checker plays the
+ * code at static faders and default knob values). Intensity: the measured end scaled by how much of the
+ * mix's fader level (lanes, entries and exits) is still missing in the first bars. Tension: knobs swept
+ * toward their bright or intense end (the axis they follow; toward max when they follow none), weighted
+ * by each part's share of the end mix, up to the +0.3 a brightening mix can measure (half the mix swept
+ * across the whole range).
+ */
+export function automationRise(parts: readonly AutomatedPart[], bars: number, measuredEnd: number): { intensity: number; tension: number } {
+  const edge = Math.min(EDGE_BARS, bars);
+  const mean = (xs: number[]) => xs.reduce((a, x) => a + x, 0) / Math.max(1, xs.length);
+  const windowFrom = (from: number) => Array.from({ length: edge }, (_, i) => from + i + 0.5);
+  const sounding = (p: AutomatedPart, bar: number) => bar >= p.enterBar && (p.exitBar === null || bar < p.exitBar);
+  const faderIn = (p: AutomatedPart, from: number) => mean(windowFrom(from).map((b) => (sounding(p, b) ? levelAt(p, b) : 0)));
+  const startLevels = parts.map((p) => faderIn(p, 0));
+  const endLevels = parts.map((p) => faderIn(p, bars - edge));
+  const start = startLevels.reduce((a, x) => a + x, 0);
+  const end = endLevels.reduce((a, x) => a + x, 0);
+  if (end <= 0) return { intensity: 0, tension: 0 };
+  const intensity = measuredEnd * Math.min(1, Math.max(0, 1 - start / end));
+
+  let swept = 0;
+  parts.forEach((p, i) => {
+    let best = 0;
+    for (const k of p.knobs) {
+      const lanes = lanesFor(p.automation, `knob:${k.name}`);
+      if (!lanes.length || k.max <= k.min) continue;
+      const position = (v: number) => {
+        const x = Math.min(k.max, Math.max(k.min, v));
+        return k.min > 0 ? Math.log(x / k.min) / Math.log(k.max / k.min) : (x - k.min) / (k.max - k.min);
+      };
+      const at = (from: number) => mean(windowFrom(from).map((b) => position(laneValue(lanes, b, k.default))));
+      const direction = k.follows.startsWith('-') ? -1 : 1;
+      best = Math.max(best, direction * (at(bars - edge) - at(0)));
+    }
+    swept += (endLevels[i]! / end) * best;
+  });
+  return { intensity, tension: 0.3 * Math.min(1, Math.max(0, 2 * swept)) };
+}
+
 export interface DramaturgyInput {
   /** Played and committed sections before the plan, in playing order. */
   before: DramaturgyEntry[];
-  sections: (DramaturgyEntry & { plan: SectionPlan; measured: { intensity: Span; tension: Span } })[];
+  sections: (DramaturgyEntry & { plan: SectionPlan; parts: readonly AutomatedPart[]; measured: { intensity: Span; tension: Span } })[];
   /** Age of the movement the plan follows (null before the first one). */
   movementAgeMin: number | null;
   opensMovement: boolean;
@@ -388,10 +441,12 @@ export function dramaturgyIssues(input: DramaturgyInput): Issue[] {
       if (run >= 3) out.push(err('dramaturgy', 'Three peak sections in a row; give the room a breath between peaks.', `${path}.targets.intensity`));
     }
     if (s.role === 'build') {
-      const rise = Math.max(s.measured.intensity.end - s.measured.intensity.start, s.measured.tension.end - s.measured.tension.start);
-      if (rise < BUILD_RISE) {
-        out.push(err('dramaturgy', `A build must measure at least ${BUILD_RISE} more intense or tense at its end than its start (measured +${round2(rise)}).`, path,
-          'Add density, open filters (knob automation), bring parts in late, or use riser-like sweeps toward the end.'));
+      const measured = Math.max(s.measured.intensity.end - s.measured.intensity.start, s.measured.tension.end - s.measured.tension.start);
+      const lanes = automationRise(s.parts, s.plan.bars, s.measured.intensity.end);
+      const automated = Math.max(lanes.intensity, lanes.tension);
+      if (Math.max(measured, automated) < BUILD_RISE) {
+        out.push(err('dramaturgy', `A build must measure at least ${BUILD_RISE} more intense or tense at its end than its start (measured +${round2(measured)}, automation +${round2(automated)}).`, path,
+          'Add density toward the end, bring parts in late, fade the mix up with level lanes, or sweep knobs toward their bright end (toward max when they follow nothing).'));
       }
     }
     if (prev?.role === 'build' && s.tension.start > prev.tension.end - RELEASE_DROP) {

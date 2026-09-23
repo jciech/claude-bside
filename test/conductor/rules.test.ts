@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SectionFingerprint } from '../../src/shared/analysis.ts';
 import type { SectionRole } from '../../src/shared/music.ts';
+import type { PartPlan } from '../../src/shared/plan.ts';
 import { EMPTY_MIXER, type MixerState } from '../../src/shared/program.ts';
 import {
   dramaturgyIssues,
@@ -226,7 +227,8 @@ describe('dramaturgy rules', () => {
   const next = (role: SectionRole, startMs: number, bars: number, intensity: [number, number], over: { measured?: { intensity: [number, number]; tension: [number, number] }; tension?: [number, number] } = {}) => {
     const e = entry(role, startMs, bars, intensity, over.tension);
     const m = over.measured ?? { intensity, tension: over.tension ?? [0.3, 0.3] };
-    return { ...e, plan: section({ role, bars: bars as 16 }), measured: { intensity: { start: m.intensity[0], end: m.intensity[1] }, tension: { start: m.tension[0], end: m.tension[1] } } };
+    const p = section({ role, bars: bars as 16 });
+    return { ...e, plan: p, parts: p.parts, measured: { intensity: { start: m.intensity[0], end: m.intensity[1] }, tension: { start: m.tension[0], end: m.tension[1] } } };
   };
   const bounds = { min: 16, max: 64 };
 
@@ -262,6 +264,29 @@ describe('dramaturgy rules', () => {
     expect(dramaturgyIssues({ before: [], sections: [rising, release], movementAgeMin: null, opensMovement: false, planBars: { min: 16, max: 64 } })[0]!.message).toMatch(/After a build/);
     const relaxed = next('drop', 32_000, 16, [0.8, 0.8], { tension: [0.5, 0.5] });
     expect(dramaturgyIssues({ before: [], sections: [rising, relaxed], movementAgeMin: null, opensMovement: false, planBars: bounds })).toEqual([]);
+  });
+
+  it('a build that rises through level and knob automation counts, though the checker measures code at static faders', () => {
+    const flat = { measured: { intensity: [0.5, 0.5] as [number, number], tension: [0.3, 0.3] as [number, number] } };
+    const build = (parts: PartPlan[]) => ({ ...next('build', 0, 16, [0.4, 0.8], flat), parts });
+    const issues = (parts: PartPlan[]) => dramaturgyIssues({ before: [], sections: [build(parts)], movementAgeMin: null, opensMovement: false, planBars: bounds });
+    const cut = { name: 'cut', default: 250, min: 200, max: 8000, follows: 'none' as const };
+    const lane = (target: string, from: number, to: number, curve: 'linear' | 'exp' = 'linear') => ({ target, fromBar: 0, toBar: 16, from, to, curve });
+    // The kick fades up; the pad fades up while its filter opens.
+    expect(issues([part('kick', { automation: [lane('level', 0.2, 1)] }), part('pad', { knobs: [cut], automation: [lane('knob:cut', 250, 8000, 'exp'), lane('level', 0.1, 1)] })])).toEqual([]);
+    // Either move alone is enough when it carries the mix.
+    expect(issues([part('kick', { level: 0.4 }), part('pad', { automation: [lane('level', 0, 1)] })])).toEqual([]);
+    expect(issues([part('kick', { level: 0.3 }), part('pad', { level: 0.9, knobs: [cut], automation: [lane('knob:cut', 250, 8000, 'exp')] })])).toEqual([]);
+    const refused = (parts: PartPlan[]) => {
+      const out = issues(parts);
+      expect(out.map((i) => i.message)).toEqual([expect.stringMatching(/build must measure/)]);
+      expect(out[0]!.hint).not.toMatch(/knob automation\)/);
+    };
+    refused([part('kick'), part('pad')]);
+    // Still meaningful: a filter closing, a knob that brightens as it falls, or a nudge of the faders is no build.
+    refused([part('kick'), part('pad', { knobs: [cut], automation: [lane('knob:cut', 8000, 250, 'exp')] })]);
+    refused([part('kick'), part('pad', { knobs: [{ ...cut, follows: '-brightness' }], automation: [lane('knob:cut', 250, 8000, 'exp')] })]);
+    refused([part('kick', { automation: [lane('level', 0.9, 1)] }), part('pad')]);
   });
 
   it('movements run 6–20 minutes; plan length out of bounds is a warning', () => {
@@ -323,28 +348,27 @@ describe('arc', () => {
 describe('mixer', () => {
   const pull = (x: number, y: number, listeners = 2) => ({ point: { x, y }, listeners });
   it('emits a keyframe at the earliest allowed cycle, ramping 1 bar for small rooms and 2 for larger', () => {
-    const m = mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.5, -0.2), trims: {} })!;
+    const m = mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.5, -0.2) })!;
     expect(m).toMatchObject({ rev: 1, prev: EMPTY_MIXER.next, next: { atCycle: 13, rampBars: 1, macros: { brightness: 0.5, intensity: -0.2 } } });
-    expect(mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.5, 0, 12), trims: {} })!.next.rampBars).toBe(2);
+    expect(mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.5, 0, 12) })!.next.rampBars).toBe(2);
   });
   it('waits for the previous ramp to finish, ignores tiny moves, settles back to neutral', () => {
-    const m = mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.5, 0), trims: {} })!;
-    expect(mixerTick({ state: m, nowCycle: 13.5, earliestCycle: 16, pull: pull(-1, 0), trims: {} })).toBeNull();
-    expect(mixerTick({ state: m, nowCycle: 14, earliestCycle: 17, pull: pull(0.51, 0), trims: {} })).toBeNull();
-    expect(mixerTick({ state: m, nowCycle: 14, earliestCycle: 17, pull: pull(0, 0, 0), trims: {} })!.next.macros).toEqual({ brightness: 0, intensity: 0 });
+    const m = mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.5, 0) })!;
+    expect(mixerTick({ state: m, nowCycle: 13.5, earliestCycle: 16, pull: pull(-1, 0) })).toBeNull();
+    expect(mixerTick({ state: m, nowCycle: 14, earliestCycle: 17, pull: pull(0.51, 0) })).toBeNull();
+    expect(mixerTick({ state: m, nowCycle: 14, earliestCycle: 17, pull: pull(0, 0, 0) })!.next.macros).toEqual({ brightness: 0, intensity: 0 });
   });
   it('the new keyframe starts from exactly what was playing (continuity for every client)', () => {
-    const m1 = mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.6, 0.2), trims: {} })!;
-    const m2 = mixerTick({ state: m1, nowCycle: 20, earliestCycle: 23, pull: pull(-0.4, 0), trims: { kick: -2 } })!;
+    const m1 = mixerTick({ state: EMPTY_MIXER, nowCycle: 10, earliestCycle: 13, pull: pull(0.6, 0.2) })!;
+    const m2 = mixerTick({ state: m1, nowCycle: 20, earliestCycle: 23, pull: pull(-0.4, 0) })!;
     for (const c of [20, 22, 23]) expect(macrosAt(m2, c)).toEqual(macrosAt(m1, c));
     expect(macrosAt(m2, 23.5).brightness).toBeCloseTo(0.1);
-    expect(m2.next.trimsDb).toEqual({ kick: -2 });
   });
   it('safety trim: −3 dB for 16 bars, extended not restarted', () => {
     const s = withSafety(EMPTY_MIXER, 40);
     expect(s.safety).toEqual({ masterDb: -3, highShelfDb: -3, fromCycle: 40, untilCycle: 56 });
     expect(withSafety(s, 50).safety).toEqual({ masterDb: -3, highShelfDb: -3, fromCycle: 40, untilCycle: 66 });
-    const expired = mixerTick({ state: s, nowCycle: 60, earliestCycle: 63, pull: pull(0, 0), trims: {} })!;
+    const expired = mixerTick({ state: s, nowCycle: 60, earliestCycle: 63, pull: pull(0, 0) })!;
     expect(expired.safety).toBeNull();
   });
   it('the needle follows the target at this bar, shifted by the measured offset and the fast lane', () => {

@@ -17,6 +17,7 @@ function prog(id: string, startCycle: number, over: Partial<SectionProgram> = {}
     code: 's("triangle")',
     orbit: 1,
     level: 0.8,
+    trimDb: 0,
     enterBar: 0,
     exitBar: null,
     knobs: [],
@@ -176,6 +177,29 @@ describe('placement under the lock', () => {
     // Second section's riser starts at its predecessor's bar 0; both must be ahead of the lock.
     expect(lockMs(tl, { startCycle: r.startCycle + 8, transitionIn: shapes[1]!.transitionIn, parts: [] })).toBeGreaterThan(now);
   });
+
+  it('after a section that must not vamp, a pre-roll that would push the plan past its end is refused with the pre-roll that still fits', () => {
+    const build = prog('build', 20, { bars: 32, role: 'build', vamp: { allowed: false, loopBars: 8 } });
+    // 3 s before the soft deadline a cut would still land at 52: its publish deadline is bar 46.
+    const now = publishDeadlineMs(tl, { startCycle: 52, transitionIn: cut, parts: [] }) - 3000 - 3000;
+    const riser = (bars: number) => [{ transitionIn: { type: 'riser' as const, bars }, parts: [{ enterBar: 0 }], bars: 32 }];
+    const r = place(input({ sections: [build], nowMs: now, shapes: riser(8) }));
+    expect(r).toEqual({ error: expect.stringMatching(/must not vamp.*cycle 52.*at most 2 bars/) });
+    const pickup = place(input({ sections: [build], nowMs: now, shapes: [{ transitionIn: cut, parts: [{ enterBar: -4 }], bars: 32 }] }));
+    expect('error' in pickup).toBe(true);
+    for (const shapes of [riser(2), [{ transitionIn: cut, parts: [{ enterBar: 0 }], bars: 32 }]]) {
+      const ok = place(input({ sections: [build], nowMs: now, shapes }));
+      if ('error' in ok) throw new Error(ok.error);
+      expect(ok).toMatchObject({ startCycle: 52, lateBars: 0 });
+    }
+    // The autopilot's fill only needs the lock, and a tail that may vamp still takes the next line that fits.
+    const fill = place(input({ mode: 'fill', sections: [build], nowMs: now, shapes: riser(8) }));
+    if ('error' in fill) throw new Error(fill.error);
+    expect(fill.startCycle).toBe(56);
+    const vamping = place(input({ sections: [{ ...build, role: 'groove', vamp: { allowed: true, loopBars: 8 } }], nowMs: now, shapes: riser(8) }));
+    if ('error' in vamping) throw new Error(vamping.error);
+    expect(vamping).toMatchObject({ startCycle: 60, lateBars: 8 });
+  });
 });
 
 describe('continuation origins', () => {
@@ -268,6 +292,52 @@ describe('Stay / Move on', () => {
   it('Move on reports min-length when the track ends anyway', () => {
     const a = prog('a', 0, { bars: 16 });
     expect(decideKeep({ current: a, next: prog('b', 16), direction: -1, timeline: tl, nowMs: now(2), nowCycle: 2 })).toMatchObject({ ok: false, blocked: 'min-length' });
+  });
+
+  it('Move on before a pending Stay cancels the repeat instead of reporting min-length', () => {
+    const a = prog('a', 0, { bars: 32, jumps: [{ atBar: 24, toBar: 16 }] });
+    for (const next of [null, prog('b', 40)]) {
+      for (const played of [16, 17, 21]) {
+        const o = decideKeep({ current: a, next, direction: -1, timeline: tl, nowMs: now(played), nowCycle: played });
+        expect(o).toEqual({ ok: true, kind: 'shorten', jumps: [], shift: -8, atCycle: 24, needsPlan: next === null });
+      }
+    }
+    // A second pending Stay is cancelled on its own once the first has played.
+    const twice = prog('a', 0, { bars: 32, jumps: [{ atBar: 24, toBar: 16 }, { atBar: 24, toBar: 16 }] });
+    expect(decideKeep({ current: twice, next: null, direction: -1, timeline: tl, nowMs: now(25), nowCycle: 25 })).toMatchObject({
+      ok: true,
+      jumps: [{ atBar: 24, toBar: 16 }],
+      shift: -8,
+      atCycle: 32,
+    });
+    // Once the Stay has played, the final phrase comes anyway.
+    expect(decideKeep({ current: a, next: null, direction: -1, timeline: tl, nowMs: now(25), nowCycle: 25 })).toMatchObject({ ok: false, blocked: 'min-length' });
+  });
+
+  it('Stay and Move on measure from where a successor that cut in early really starts', () => {
+    const a = prog('a', 0, { bars: 32 });
+    // A --next commit cut in at bar 16: the final phrase of a is never reached.
+    const early = prog('b', 16);
+    expect(decideKeep({ current: a, next: early, direction: -1, timeline: tl, nowMs: now(3), nowCycle: 3 })).toMatchObject({ ok: false, blocked: 'min-length' });
+    // Move on still shortens a section cut in later: the successor follows the final phrase.
+    const later = prog('b', 28);
+    expect(decideKeep({ current: a, next: later, direction: -1, timeline: tl, nowMs: now(3), nowCycle: 3 })).toEqual({
+      ok: true,
+      kind: 'shorten',
+      jumps: [{ atBar: 8, toBar: 24 }],
+      shift: -12,
+      atCycle: 8,
+      needsPlan: false,
+    });
+    // Stay repeats the phrase before the cut, where it is heard, and pushes the successor by that much.
+    expect(decideKeep({ current: a, next: early, direction: 1, timeline: tl, nowMs: now(3), nowCycle: 3 })).toEqual({
+      ok: true,
+      kind: 'extend',
+      jumps: [{ atBar: 16, toBar: 8 }],
+      shift: 8,
+      atCycle: 16,
+      needsPlan: false,
+    });
   });
 
   it('Move on while the tail vamps asks for a plan', () => {

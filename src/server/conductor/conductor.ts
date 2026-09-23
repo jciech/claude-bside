@@ -35,6 +35,7 @@ import {
   type Crowd,
   type CrowdSignal,
   type Ledger,
+  type LedgerRow,
   type Logger,
   type PersistedSession,
   type RoomClock,
@@ -123,7 +124,6 @@ export interface ConductorDeps {
 
 interface SectionMeta {
   fingerprint: SectionFingerprint | null;
-  trims: Record<string, number>;
   /** Request decisions this section realises (for its liner note and for revokes). */
   decisions: { requestId: string; publicReply: string }[];
   announcement: string | null;
@@ -153,6 +153,8 @@ interface Inflight {
   /** When the deadline passed while a commit was being checked (0 = it hasn't). */
   expiredAtMs: number;
   abortReason: string | null;
+  /** The section the plan follows and where it ended when the deadlines were last set. */
+  anchorEnd: { id: string; cycle: number; ms: number } | null;
 }
 
 interface CommitOptions {
@@ -193,8 +195,8 @@ function closedResult(): CommitResult {
 
 export function createConductor(deps: ConductorDeps): Conductor {
   const { clock, crowd, checker, store, log, config, catalog, composers, broadcaster } = deps;
-  const ledger = deps.ledger ?? createLedger({ store, log });
   const wallNow = deps.wallNow ?? Date.now;
+  const ledger = deps.ledger ?? createLedger({ store, log, now: wallNow });
   const catalogIds = new Set(catalog.sounds.flatMap((s) => [s.id, ...(s.aliases ?? [])]));
 
   let epoch = '';
@@ -222,6 +224,8 @@ export function createConductor(deps: ConductorDeps): Conductor {
   let lastAuthor: DriverName | null = null;
   let fallbackBusy = false;
   let retryNotBeforeMs = 0;
+  /** A retry after a composer failure keeps the failed request's hard deadline (relative to its anchor's end). */
+  let retryCap: { anchorId: string; afterEndMs: number } | null = null;
   const pendingReasons = new Set<PlanReason>();
   let lastPlanAt: number | null = null;
   let lastPlanHealth: TurnContext['health']['lastPlan'] = null;
@@ -306,10 +310,14 @@ export function createConductor(deps: ConductorDeps): Conductor {
     return out;
   }
 
+  /** Provisional sections a replan may take the slot of: only the trailing run, since placement revokes everything after the first. */
   function replaceableIds(): string[] {
     const locked = planningLocked();
     const now = nowMs();
-    return sections.filter((s) => s.provisional && !locked.has(s.id) && !isHardLocked(timeline, s, now) && s.startCycle > nowCycle()).map((s) => s.id);
+    const firm = sections.findLastIndex((s) => !s.provisional);
+    return sections
+      .filter((s, i) => i > firm && !locked.has(s.id) && !isHardLocked(timeline, s, now) && s.startCycle > nowCycle())
+      .map((s) => s.id);
   }
 
   function keptFor(replaces: readonly string[]): SectionProgram[] {
@@ -643,7 +651,8 @@ export function createConductor(deps: ConductorDeps): Conductor {
         sections: plan.sections.map((s, i) => ({
           plan: s,
           movementBpm: layout[i]!.movementBpm,
-          fromBpm: i === 0 ? (anchor?.tempo.toBpm ?? s.bpm) : plan.sections[0]!.bpm,
+          // A cut-in (next/now) can start inside a ramp: compare with the tempo playing there.
+          fromBpm: i === 0 ? (anchor ? round2(cpsToBpm(cpsAtCycle(prep.placement.timeline, prep.starts[0]! - 1e-6))) : s.bpm) : plan.sections[0]!.bpm,
           opensMovement: layout[i]!.opens,
           prevBeatless: i === 0 ? (anchor ? isBeatless(anchor.parts) : true) : isBeatless(prep.resolved[0]!.parts),
         })),
@@ -696,6 +705,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
           },
           tension: s.targets.tension,
           plan: s,
+          parts: prep.resolved[i]!.parts,
           measured: { intensity: spans.intensity, tension: spans.tension },
         };
       }),
@@ -803,7 +813,9 @@ export function createConductor(deps: ConductorDeps): Conductor {
     if (plan.movement) {
       const mp = plan.movement;
       movementSeq++;
-      side++;
+      // Sides follow the record as it stands: one revoked before it played gives its number back.
+      const keptMovements = new Set(placement.kept.map((s) => s.movementId));
+      side = Math.max(0, ...movements.filter((m) => keptMovements.has(m.id)).map((m) => m.side)) + 1;
       const id = `${epoch}-m${movementSeq}`;
       const formBars = mp.form.reduce((a, f) => a + f.bars, 0);
       opened = {
@@ -834,7 +846,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     plan.sections.forEach((s, i) => {
       sectionSeq++;
       const movementId = layout[i]!.movementId;
-      const { program, trims } = compileSection({
+      const program = compileSection({
         id: `${epoch}-${pad4(sectionSeq)}`,
         index: (prev?.index ?? 0) + 1,
         track: prev && prev.movementId === movementId ? prev.track + 1 : (movementById(movementId)?.tracks.length ?? 0) + 1,
@@ -845,12 +857,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
         parts: prep.resolved[i]!.parts,
         provisional: i === 1,
         prev,
+        earlier: [...placement.kept, ...programs].slice(0, -1),
         check: checks[i]!,
       });
       const decisions = plan.requestDecisions.filter((d) => d.decision === 'this-plan' && d.sectionIndex === i && crowd.hasRequest(d.requestId));
       meta.set(program.id, {
         fingerprint: checks[i]!.fingerprint,
-        trims,
         decisions: decisions.map((d) => ({ requestId: d.requestId, publicReply: d.publicReply })),
         announcement: i === 0 ? plan.announcement : null,
       });
@@ -864,7 +876,14 @@ export function createConductor(deps: ConductorDeps): Conductor {
       if (m?.decisions.length) crowd.applyDecisions(m.decisions.map((d) => ({ requestId: d.requestId, status: 'considered', publicReply: d.publicReply, sectionId: null })));
       meta.delete(id);
     }
-    sections = [...placement.kept, ...programs];
+    // A provisional section that now has a successor is no longer replaceable (the successor was written to follow it).
+    const kept = [...placement.kept];
+    const flipped: SectionProgram[] = [];
+    if (anchor?.provisional && !isHardLocked(timeline, anchor, now)) {
+      flipped.push({ ...anchor, provisional: false, rev: anchor.rev + 1 });
+      kept[kept.length - 1] = flipped[0]!;
+    }
+    sections = [...kept, ...programs];
     if (opened) movements.push(opened);
     const referenced = new Set(sections.map((s) => s.movementId));
     movements = movements.filter((m) => referenced.has(m.id));
@@ -878,7 +897,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
 
     setTimeline(rebuildTimeline(timeline, now, sections));
     for (const p of programs) p.tempo.fromBpm = round2(cpsToBpm(cpsAtCycle(timeline, p.startCycle - 1e-6)));
-    publish(programs, placement.revokes);
+    publish([...flipped, ...programs], placement.revokes);
 
     const decisions = plan.requestDecisions
       .filter((d) => crowd.hasRequest(d.requestId))
@@ -1003,20 +1022,31 @@ export function createConductor(deps: ConductorDeps): Conductor {
       } else return;
     }
     if (fallbackBusy || now < retryNotBeforeMs) return;
+    const cur = currentSection();
+    // Move on asks for a successor; once one is committed, the reason is answered.
+    if (cur && successorOf(cur)) pendingReasons.delete('move-on');
     const threshold = horizonThresholdSec();
     const committedSec = committedHorizonSec();
     const replaceable = replaceableIds();
     const events = [...pendingReasons];
     // Provisional sections don't count: they may still be replaced.
     const horizonDue = lockedHorizonSec() < threshold;
-    const eventDue =
-      events.length > 0 && (events.some((r) => URGENT_REASONS.has(r)) || replaceable.length > 0 || committedSec < threshold + EVENT_HORIZON_MAX_S);
-    if (!horizonDue && !eventDue) return;
+    const eventDue = (canReplace: boolean) =>
+      events.length > 0 && (events.some((r) => URGENT_REASONS.has(r)) || canReplace || committedSec < threshold + EVENT_HORIZON_MAX_S);
+    if (!horizonDue && !eventDue(replaceable.length > 0)) return;
 
-    const replaces = eventDue && events.some((r) => REPLAN_REASONS.has(r)) ? replaceable : [];
+    const choice = chooseComposer();
+    let replaces = eventDue(replaceable.length > 0) && events.some((r) => REPLAN_REASONS.has(r)) ? replaceable : [];
+    if (replaces.length && choice.author !== 'scripted') {
+      const before = keptFor(replaces).at(-1);
+      // A replan must land by the replaced slot's deadline; without time to compose it, the reasons wait for the next request.
+      if (before && softFor(plannedEnd(before)) - barMs() < now + Math.max(MIN_COMPOSE_MS, p90ComposeMs())) {
+        replaces = [];
+        if (!horizonDue && !eventDue(false)) return;
+      }
+    }
     const kept = keptFor(replaces);
     const anchor = kept[kept.length - 1] ?? null;
-    const choice = chooseComposer();
     if (choice.author !== 'scripted' && anchor && !anchor.vamp.allowed && !replaces.length && softFor(plannedEnd(anchor)) < now + MIN_COMPOSE_MS) {
       void fallbackCommit(['guardrail']);
       return;
@@ -1034,6 +1064,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const anchor = kept[kept.length - 1] ?? null;
     bendForPlan(anchor ? movementById(anchor.movementId) : null);
     const t = targetFor(anchor, replaces.length > 0);
+    // A failure never lengthens the vamp: the retry has what was left of the failed request's slot.
+    if (retryCap && anchor?.id === retryCap.anchorId && !replaces.length) {
+      t.hard = Math.min(t.hard, msAtCycle(timeline, plannedEnd(anchor)) + retryCap.afterEndMs);
+      t.soft = Math.min(t.soft, t.hard);
+    }
+    retryCap = null;
     const oneSectionSec = 32 * (barMsAt(timeline, t.target) / 1000);
     const sectionsWanted: 1 | 2 = kind === 'movement' || secondsUntil(t.target) + oneSectionSec < horizonThresholdSec() ? 2 : 1;
     const id = `${epoch}-r${++requestSeq}`;
@@ -1053,6 +1089,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
       rejected: 0,
       expiredAtMs: 0,
       abortReason: null,
+      anchorEnd: anchor ? { id: anchor.id, cycle: plannedEnd(anchor), ms: msAtCycle(timeline, plannedEnd(anchor)) } : null,
     };
     inflight = inf;
     lastAuthor = choice.author;
@@ -1114,7 +1151,13 @@ export function createConductor(deps: ConductorDeps): Conductor {
     }
     log.warn('conductor: planning request missed its deadline', { request: inf.request.id, author: inf.author });
     abortRequest(inf, 'deadline');
-    if (inf.author !== 'scripted') addHealthNote(`Request ${inf.request.id} missed its deadline; the autopilot filled the slot.`);
+    if (inf.author !== 'scripted') {
+      addHealthNote(
+        inf.replaces.length
+          ? `Replan ${inf.request.id} missed its deadline; the provisional section stands.`
+          : `Request ${inf.request.id} missed its deadline; the autopilot filled the slot.`,
+      );
+    }
     if (!inf.replaces.length) void fallbackCommit(inf.request.context.request.reasons);
     emitStatus(true);
   }
@@ -1122,9 +1165,13 @@ export function createConductor(deps: ConductorDeps): Conductor {
   function finishRequest(inf: Inflight, outcome: ComposeOutcome): void {
     const now = nowMs();
     if (inf.author === 'claude') {
-      composeMs.push(outcome.usage?.ms ?? now - inf.startedAtMs);
+      // Only Claude's own finishes time a compose; one cut off by its deadline took at least the p90 so far.
+      const elapsed = outcome.usage?.ms ?? now - inf.startedAtMs;
+      if (inf.abortReason === null) composeMs.push(elapsed);
+      else if (inf.abortReason === 'deadline') composeMs.push(Math.max(elapsed, p90ComposeMs()));
       if (composeMs.length > 20) composeMs.shift();
-      const attributable = inf.accepted ? !inf.fulfilledExternally : inf.abortReason === null || inf.abortReason === 'deadline';
+      // A replan's deadline is the room's, not a sign that Claude is failing.
+      const attributable = inf.accepted ? !inf.fulfilledExternally : inf.abortReason === null || (inf.abortReason === 'deadline' && !inf.replaces.length);
       if (attributable && inf.accepted) {
         breaker.failures = 0;
         breaker.openUntil = null;
@@ -1145,8 +1192,20 @@ export function createConductor(deps: ConductorDeps): Conductor {
       // The room's reasons still stand; ask again after a short pause rather than in a tight loop.
       for (const r of inf.request.context.request.reasons) if (REPLAN_REASONS.has(r)) pendingReasons.add(r);
       retryNotBeforeMs = now + Math.max(RETRY_AFTER_MS, 2 * barMs());
-      // When the autopilot itself fails, fall through to its last resort (carrying the tail).
-      if (inf.author === 'scripted' && inf.abortReason === null && !inf.replaces.length) void fallbackCommit(inf.request.context.request.reasons);
+      const reasons = inf.request.context.request.reasons;
+      if (inf.abortReason === null && !inf.replaces.length) {
+        followAnchor(inf);
+        const tail = sections.at(-1);
+        // When the autopilot itself fails, fall through to its last resort (carrying the tail).
+        if (inf.author === 'scripted') void fallbackCommit(reasons);
+        else if (tail?.id === inf.anchorEnd?.id && tail?.vamp.allowed && retryNotBeforeMs + p90ComposeMs() > inf.request.hardDeadlineMs) {
+          // A retry would no longer land in this slot: the autopilot takes it, the retry plans the next one.
+          addHealthNote(`Request ${inf.request.id} failed with too little time left to try again; the autopilot filled the slot.`);
+          void fallbackCommit(reasons);
+        } else if (inf.anchorEnd) {
+          retryCap = { anchorId: inf.anchorEnd.id, afterEndMs: inf.request.hardDeadlineMs - inf.anchorEnd.ms };
+        }
+      }
     }
     if (!inf.closed) abortRequest(inf, 'superseded');
     if (inflight === inf) inflight = null;
@@ -1185,10 +1244,25 @@ export function createConductor(deps: ConductorDeps): Conductor {
     }
   }
 
+  /** Stay / Move on moved the end of the section the request follows: its slot and deadlines move with it. */
+  function followAnchor(inf: Inflight): void {
+    const was = inf.anchorEnd;
+    const anchor = was && sections.find((s) => s.id === was.id);
+    if (!was || !anchor) return;
+    const cycle = plannedEnd(anchor);
+    const ms = msAtCycle(timeline, cycle);
+    if (cycle === was.cycle && ms === was.ms) return;
+    inf.request.softDeadlineMs += ms - was.ms;
+    inf.request.hardDeadlineMs += ms - was.ms;
+    inf.request.targetCycle += cycle - was.cycle;
+    inf.anchorEnd = { id: was.id, cycle, ms };
+  }
+
   function checkDeadlines(): void {
     const now = nowMs();
     const inf = inflight;
     if (inf && !inf.closed) {
+      followAnchor(inf);
       if (inf.expiredAtMs) {
         if (now >= inf.expiredAtMs + ACCEPT_BUDGET_MS) expire(inf, true);
         return;
@@ -1232,21 +1306,15 @@ export function createConductor(deps: ConductorDeps): Conductor {
     }
   }
 
-  function startSection(s: SectionProgram): void {
-    started.add(s.id);
-    const now = nowMs();
-    const idx = sections.indexOf(s);
-    const prev = idx > 0 ? sections[idx - 1]! : null;
-    if (prev && started.has(prev.id)) closeSection(prev, s.startCycle);
-    const m = meta.get(s.id);
-    const fp = m?.fingerprint ?? fallbackFingerprint(s);
-    ledger.record({
+  function ledgerRow(s: SectionProgram, startedAtWallMs: number): LedgerRow {
+    const fp = meta.get(s.id)?.fingerprint ?? fallbackFingerprint(s);
+    return {
       sectionId: s.id,
       epoch,
       movementId: s.movementId,
       name: s.name,
       role: s.role,
-      startedAtWallMs: wallNow(),
+      startedAtWallMs,
       endedAtWallMs: null,
       startCycle: s.startCycle,
       bpm: s.tempo.toBpm,
@@ -1261,7 +1329,17 @@ export function createConductor(deps: ConductorDeps): Conductor {
       crowd: null,
       author: s.author,
       audible: audible(),
-    });
+    };
+  }
+
+  function startSection(s: SectionProgram): void {
+    started.add(s.id);
+    const now = nowMs();
+    const idx = sections.indexOf(s);
+    const prev = idx > 0 ? sections[idx - 1]! : null;
+    if (prev && started.has(prev.id)) closeSection(prev, s.startCycle);
+    const m = meta.get(s.id);
+    ledger.record(ledgerRow(s, wallNow()));
     crowd.markSectionPlaying(s.id);
     crowd.sectionStarted({ id: s.id, startCycle: s.startCycle, bars: s.bars, role: s.role });
     played.push({ sectionId: s.id, role: s.role, span: spanOf(s, timeline), tension: s.targets.tension, ended: false });
@@ -1345,6 +1423,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
       setTimeline(rebuildTimeline(timeline, nowMs(), sections));
       publish(upserts, []);
     }
+    if (inflight && !inflight.closed) followAnchor(inflight);
     crowd.setKeepPending({ kind: outcome.kind, heldBars: KEEP_HOLD_BARS, needBars: KEEP_HOLD_BARS, atCycle: outcome.atCycle, blocked: null });
     crowd.consumeKeep();
     sectionKeep.set(cur.id, sig.direction);
@@ -1387,9 +1466,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
   function mixerStep(): void {
     const now = nowMs();
     const earliest = Math.ceil(cycleAtMs(timeline, now + MIN_CHANGE_LEAD_S * 1000 + ACCEPT_MARGIN_MS));
-    const at = sectionAt(earliest);
-    const pull = crowd.pull();
-    const next = mixerTick({ state: mixer, nowCycle: nowCycle(), earliestCycle: earliest, pull, trims: at ? (meta.get(at.id)?.trims ?? {}) : {} });
+    const next = mixerTick({ state: mixer, nowCycle: nowCycle(), earliestCycle: earliest, pull: crowd.pull() });
     if (!next) return;
     mixer = next;
     broadcaster.emit('mixer', mixer);
@@ -1464,8 +1541,13 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const ordered = [...saved.sections].sort((a, b) => a.startCycle - b.startCycle);
     const tail = ordered[ordered.length - 1];
     const need = now + SECTION_PRELOAD_S * 1000 + PRELOAD_BARS * barMsAt(tl, c) + ACCEPT_BUDGET_MS;
+    // A new epoch never closes the rows of what was playing when the last one stopped.
+    const closeStopped = () => {
+      for (const s of saved.sections) if (s.startCycle <= saved.lastCycle) ledger.close(s.id, saved.savedAtWallMs, null);
+    };
     if (!tail || !(c >= saved.lastCycle - 1e-6) || msAtCycle(tl, plannedEnd(tail)) < need) {
       log.info('conductor: previous session too old to resume', { epoch: saved.epoch });
+      closeStopped();
       return { restored: false, lastCycle };
     }
     const extents = sectionExtents(ordered);
@@ -1483,14 +1565,22 @@ export function createConductor(deps: ConductorDeps): Conductor {
       kept.push(s);
       checks.set(s.id, result);
     }
-    if (current ? !kept.includes(current) : !kept.length) return { restored: false, lastCycle };
+    if (current ? !kept.includes(current) : !kept.length) {
+      closeStopped();
+      return { restored: false, lastCycle };
+    }
 
     epoch = saved.epoch;
     rev = saved.rev;
     sectionSeq = saved.sectionSeq;
     movementSeq = saved.movementSeq;
     side = saved.side;
-    sections = kept;
+    sections = kept.map((s) => {
+      const check = checks.get(s.id)!;
+      const trims = balanceTrims(s.parts, s.parts.map((p) => check.parts.find((x) => x.id === p.id)));
+      // Programs persisted before trims moved onto their parts get them from the re-check.
+      return { ...s, parts: s.parts.map((p) => ({ ...p, trimDb: p.trimDb ?? trims[p.id] ?? 0 })) };
+    });
     const referenced = new Set(kept.map((s) => s.movementId));
     movements = saved.movements.filter((m) => referenced.has(m.id));
     mixer = saved.mixer ?? EMPTY_MIXER;
@@ -1498,15 +1588,16 @@ export function createConductor(deps: ConductorDeps): Conductor {
     noteSeq = notes.reduce((n, x) => Math.max(n, Number(/-n(\d+)$/.exec(x.id)?.[1] ?? 0)), 0);
     gridOrigin = ordered[0]!.startCycle;
     timeline = tl;
-    for (const s of kept) {
-      const check = checks.get(s.id)!;
-      meta.set(s.id, { fingerprint: check.fingerprint, trims: balanceTrims(s.parts, s.parts.map((p) => check.parts.find((x) => x.id === p.id))), decisions: [], announcement: null });
+    for (const s of sections) {
+      meta.set(s.id, { fingerprint: checks.get(s.id)!.fingerprint, decisions: [], announcement: null });
       if (s.startCycle <= c) {
         started.add(s.id);
-        played.push({ sectionId: s.id, role: s.role, span: spanOf(s, tl), tension: s.targets.tension, ended: s !== current });
+        played.push({ sectionId: s.id, role: s.role, span: spanOf(s, tl), tension: s.targets.tension, ended: s.id !== current?.id });
       }
     }
     for (const m of movements) if (m.startCycle <= c) movementStartMs.set(m.id, msAtCycle(tl, m.startCycle));
+    // Sections that started during the downtime get their rows (closing the one playing at the stop).
+    for (const s of ordered) if (s.startCycle <= c) ledger.record(ledgerRow(s, wallNow() - (now - msAtCycle(tl, s.startCycle))));
     setTimeline(rebuildTimeline(tl, now, sections));
     log.info('conductor: warm restore', { epoch, sections: sections.length, shiftMs: Math.round(shift) });
     return { restored: true };
@@ -1611,7 +1702,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
         const ctx = r.context;
         return {
           ...ctx,
-          request: { ...ctx.request, softDeadlineSec: Math.max(0, Math.round((r.softDeadlineMs - now) / 1000)), hardDeadlineSec: Math.max(0, Math.round((r.hardDeadlineMs - now) / 1000)) },
+          request: {
+            ...ctx.request,
+            softDeadlineSec: Math.max(0, Math.round((r.softDeadlineMs - now) / 1000)),
+            hardDeadlineSec: Math.max(0, Math.round((r.hardDeadlineMs - now) / 1000)),
+            startCycle: r.targetCycle,
+          },
         };
       }
       const anchor = sections[sections.length - 1] ?? null;

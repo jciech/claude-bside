@@ -3,6 +3,7 @@ import { cycleAtMs, msAtCycle } from '../../src/shared/timeline.ts';
 import { plannedPlayBars } from '../../src/shared/schedule.ts';
 import { STORE_KEYS, type PersistedSession } from '../../src/server/types.ts';
 import { createMemoryStore } from '../../src/server/conductor/store.ts';
+import type { SectionPlan } from '../../src/shared/plan.ts';
 import { createFakeClock, createRoom, lastSchedule, movement, part, plan, section, type Room } from './harness.ts';
 
 async function boot(over: Parameters<typeof createRoom>[0] = {}): Promise<Room> {
@@ -75,6 +76,30 @@ describe('planning requests and deadlines', () => {
     expect(filled.startCycle).toBe(t.startCycle + t.bars);
   });
 
+  it('after a build, a riser that no longer fits before its end is refused; a cut in its place lands on time', async () => {
+    const room = await claudeRoom();
+    await room.clock.advance(1);
+    const first = room.claude.last();
+    expect((await room.claude.commit(plan([section({ role: 'build', bars: 32, name: 'Build', parts: [part('kick', { code: 's("sbd").rise()' })] })]))).accepted).toBe(true);
+    const build = tail(room);
+    expect(build.vamp.allowed).toBe(false);
+    for (let i = 0; i < 64 && room.claude.last() === first; i++) await room.clock.advance(2000);
+    const req = room.claude.last();
+    expect(req.request.targetCycle).toBe(build.startCycle + 32);
+    // 3 s before the soft deadline: in time for a cut, too late for an 8-bar riser.
+    await room.clock.advance(req.request.softDeadlineMs - room.clock.now() - 3000);
+    expect(req.signal.aborted).toBe(false);
+    const drop = (transitionIn: SectionPlan['transitionIn']) =>
+      plan([section({ role: 'drop', name: 'Drop', bars: 32, transitionIn, targets: { ...section().targets, tension: { start: 0.1, end: 0.2 } } })]);
+    const riser = await req.tools.commit(drop({ type: 'riser', bars: 8 }));
+    expect(riser.accepted).toBe(false);
+    expect(riser.errors[0]).toMatchObject({ rule: 'lead-time', message: expect.stringMatching(/must not vamp.*at most 2 bars/) });
+    expect(req.signal.aborted).toBe(false);
+    const cut = await room.claude.commit(drop({ type: 'cut', bars: 0 }));
+    expect(cut.accepted).toBe(true);
+    expect(cut.sections[0]!.startCycle).toBe(build.startCycle + 32);
+  });
+
   it('a commit being checked when the deadline hits still lands; the fallback is not needed', async () => {
     const room = await claudeRoom();
     await room.clock.advance(1);
@@ -127,6 +152,33 @@ describe('planning requests and deadlines', () => {
     for (let i = 0; i < 90 && room.claude.requests.length < 4; i++) await room.clock.advance(2000);
     expect(room.claude.requests).toHaveLength(4);
     expect(room.claude.last().request.context.request.reasons).toContain('handoff');
+  });
+
+  it('a Claude failure too late to retry within its slot hands the slot to the autopilot instead of moving the deadline out', async () => {
+    const room = await claudeRoom();
+    await room.clock.advance(1);
+    await room.claude.commit(plan([section({ role: 'bridge', name: 'Groove', bars: 32 })]));
+    const groove = tail(room);
+    const first = room.claude.requests.length;
+    const failed = new Set<object>();
+    let firstHard: number | null = null;
+    // Every later request fails 45 s after it was issued, just inside its deadline.
+    for (let i = 0; i < 60 && room.clock.cycle() < groove.startCycle + 40; i++) {
+      for (const r of room.claude.requests.slice(first)) {
+        firstHard ??= r.request.hardDeadlineMs;
+        if (!failed.has(r) && room.clock.now() >= r.request.createdAt + 45_000) {
+          failed.add(r);
+          r.resolve({ status: 'failed', reason: 'api error', attempts: 1 });
+        }
+      }
+      await room.clock.advance(2000);
+    }
+    expect(failed.size).toBeGreaterThan(0);
+    const tl = room.conductor.snapshot().timeline;
+    const next = sectionsOf(room).find((s) => s.startCycle > groove.startCycle)!;
+    expect(next.author).toBe('scripted');
+    expect(next.startCycle).toBeLessThanOrEqual(cycleAtMs(tl, firstHard!) + 4);
+    expect(room.conductor.previewContext().health.notes.join(' ')).toMatch(/autopilot/);
   });
 
   it('a failed half-open attempt re-opens the breaker at once', async () => {
@@ -239,6 +291,62 @@ describe('planning requests and deadlines', () => {
     expect(room.conductor.snapshot().composer.horizonSec).toBeLessThan(120);
   });
 
+  it('a crowd replan never revokes a section committed after the provisional one; that one stops being provisional', async () => {
+    const room = await claudeRoom();
+    await room.clock.advance(1);
+    const r = await room.claude.commit(plan([section({ role: 'bridge', name: 'Keep', bars: 32 }), section({ role: 'interlude', name: 'Prov', bars: 32 })]));
+    const prov = r.sections[1]!;
+    await room.clock.advance(2000);
+    const second = room.claude.last();
+    expect(second.request.context.request.replaces).toEqual([]);
+    expect((await room.claude.commit(plan([section({ role: 'groove', name: 'After', bars: 32 })]))).accepted).toBe(true);
+    expect(sectionsOf(room).find((s) => s.id === prov.id)).toMatchObject({ provisional: false, rev: 2 });
+    expect(lastSchedule(room).upserts.map((s) => s.name)).toEqual(['Prov', 'After']);
+    room.crowd.queued.push([{ type: 'replan-pressure', axis: 'intensity', pressure: 0.6 }]);
+    for (let i = 0; i < 4; i++) await room.clock.advance(2000);
+    for (const req of room.claude.requests.slice(room.claude.requests.indexOf(second) + 1)) expect(req.request.context.request.replaces).toEqual([]);
+    expect(sectionsOf(room).map((s) => s.name).slice(-3)).toEqual(['Keep', 'Prov', 'After']);
+  });
+
+  async function provisionalTail(failAtCycle: number) {
+    const room = await claudeRoom();
+    await room.clock.advance(1);
+    const r = await room.claude.commit(plan([section({ role: 'bridge', name: 'Keep', bars: 16 }), section({ role: 'interlude', name: 'Prov', bars: 32 })]));
+    await room.clock.advance(1);
+    const horizon = room.claude.last();
+    expect(horizon.request.context.request.reasons).toEqual(['horizon']);
+    // The room leans while the horizon request is in flight.
+    room.crowd.queued.push([{ type: 'replan-pressure', axis: 'intensity', pressure: 0.6 }]);
+    await room.clock.toCycle(failAtCycle);
+    horizon.resolve({ status: 'failed', reason: 'api error', attempts: 1 });
+    // The retry after the failure carries the room's pressure while Prov is still replaceable.
+    for (let i = 0; i < 4 && room.claude.last() === horizon; i++) await room.clock.advance(2000);
+    const next = room.claude.last();
+    expect(next).not.toBe(horizon);
+    return { room, prov: r.sections[1]!, next };
+  }
+
+  it('a replan with less than the minimum compose time left is not issued; the pressure rides with the horizon request', async () => {
+    // The retry comes at bar 19, 17 s before the replaced slot's deadline.
+    const { next } = await provisionalTail(15);
+    expect(next.request.context.request.replaces).toEqual([]);
+    expect(next.request.context.request.reasons).toEqual(['horizon', 'crowd-pressure']);
+  });
+
+  it('a replan that misses its deadline is not a Claude failure: the provisional section stands', async () => {
+    const { room, prov, next } = await provisionalTail(10);
+    expect(next.request.context.request.replaces).toEqual([prov.id]);
+    for (let i = 0; i < 20 && !next.signal.aborted; i++) await room.clock.advance(2000);
+    expect(next.signal.reason).toBe('deadline');
+    expect(sectionsOf(room).find((s) => s.id === prov.id)).toBeTruthy();
+    expect(room.conductor.previewContext().health.notes.at(-1)).toMatch(/provisional section stands/);
+    // One real failure before and one after: two in a row, not three.
+    for (let i = 0; i < 10 && room.claude.last() === next; i++) await room.clock.advance(2000);
+    room.claude.last().resolve({ status: 'failed', reason: 'api error', attempts: 1 });
+    await room.clock.advance(1);
+    expect(room.conductor.snapshot().composer.state).not.toBe('failed');
+  });
+
   it('a two-section plan: the second is provisional until its predecessor starts playing', async () => {
     const room = await claudeRoom();
     await room.clock.advance(1);
@@ -334,6 +442,68 @@ describe('Stay and Move on in the room', () => {
     expect(req.request.context.request.reasons).toContain('move-on');
     expect(req.request.targetCycle).toBeGreaterThanOrEqual(only.startCycle + 16);
   });
+
+  async function grooveWithRequest(): Promise<{ room: Room; groove: ReturnType<typeof tail>; req: Room['claude']['requests'][number] }> {
+    const room = await claudeRoom();
+    await room.clock.advance(1);
+    const first = room.claude.last();
+    await room.claude.commit(plan([section({ role: 'bridge', name: 'Groove', bars: 64 })]));
+    const groove = tail(room);
+    for (let i = 0; i < 64 && room.claude.last() === first; i++) await room.clock.advance(2000);
+    return { room, groove, req: room.claude.last() };
+  }
+
+  it('Move on with a request in flight moves its deadlines with the shortened section, so the autopilot fills soon after', async () => {
+    const { room, groove, req } = await grooveWithRequest();
+    const tl = () => room.conductor.snapshot().timeline;
+    expect(req.request.hardDeadlineMs).toBe(msAtCycle(tl(), groove.startCycle + 64) - 15_000 + 16_000);
+    room.crowd.queued.push([{ type: 'keep', direction: -1, sectionId: groove.id }]);
+    await room.clock.advance(2001);
+    const end = groove.startCycle + plannedPlayBars(sectionsOf(room).find((s) => s.id === groove.id)!);
+    expect(end).toBeLessThan(groove.startCycle + 64);
+    expect(req.request.hardDeadlineMs).toBe(msAtCycle(tl(), end) - 15_000 + 16_000);
+    expect(room.conductor.apiStatus().pending?.hardDeadlineMs).toBe(req.request.hardDeadlineMs);
+    // Claude never commits: the autopilot takes the slot one phrase after the new end, not 40 bars later.
+    await room.clock.toCycle(end + 2);
+    expect(req.signal.reason).toBe('deadline');
+    const next = sectionsOf(room).find((s) => s.startCycle > groove.startCycle)!;
+    expect(next.author).toBe('scripted');
+    expect(next.startCycle).toBeLessThanOrEqual(end + 4);
+  });
+
+  it('Stay with a request in flight gives the composer the extra phrase too', async () => {
+    const { room, groove, req } = await grooveWithRequest();
+    const hard = req.request.hardDeadlineMs;
+    room.crowd.queued.push([{ type: 'keep', direction: 1, sectionId: groove.id }]);
+    await room.clock.advance(2001);
+    expect(req.request.hardDeadlineMs).toBe(hard + 8 * 2000);
+    await room.clock.advance(hard - room.clock.now() + 2001);
+    expect(req.signal.aborted).toBe(false);
+    expect((await room.claude.commit(plan([section({ role: 'interlude', name: 'In Time' })]))).accepted).toBe(true);
+  });
+
+  it('a move-on already answered by the plan in flight does not replan the new provisional section', async () => {
+    const room = await boot({ config: { driver: 'external' } as never });
+    await room.clock.advance(1);
+    await room.conductor.commit({ plan: plan([section({ role: 'bridge', name: 'Only', bars: 64 })]), requestId: room.external.last().request.id }, 'external');
+    const only = tail(room);
+    await room.clock.toCycle(only.startCycle + 20);
+    const inflight = room.external.last();
+    expect(inflight.signal.aborted).toBe(false);
+    room.crowd.queued.push([{ type: 'keep', direction: -1, sectionId: only.id }]);
+    await room.clock.advance(2001);
+    expect(tail(room).jumps).toHaveLength(1);
+    // The request in flight lands and gives the shortened section its successor.
+    const r = await room.conductor.commit({ plan: plan([section({ role: 'groove', name: 'A', bars: 32 }), section({ role: 'interlude', name: 'B', bars: 32 })]), requestId: inflight.request.id }, 'external');
+    expect(r.accepted).toBe(true);
+    await room.clock.advance(2001);
+    const later = room.external.requests.slice(room.external.requests.indexOf(inflight) + 1);
+    for (const x of later) {
+      expect(x.request.context.request.reasons).not.toContain('move-on');
+      expect(x.request.context.request.replaces).toEqual([]);
+    }
+    expect(sectionsOf(room).map((s) => s.name)).toContain('B');
+  });
 });
 
 describe('restart', () => {
@@ -409,6 +579,44 @@ describe('restart', () => {
     const ids = again.conductor.snapshot().sections.map((s) => s.id);
     expect(ids).not.toContain(tampered.sections.at(-1)!.id);
     expect(again.conductor.snapshot().epoch).toBe('ep1');
+  });
+
+  type Entry = { t: 'row'; row: { sectionId: string; startedAtWallMs: number } } | { t: 'close'; sectionId: string; endedAtWallMs: number };
+  const ledgerRows = (store: ReturnType<typeof createMemoryStore>) => {
+    const out = new Map<string, { started: number; ended: number | null }>();
+    for (const e of store.readJsonl<Entry>(STORE_KEYS.ledger)) {
+      if (e.t === 'row') out.set(e.row.sectionId, { started: e.row.startedAtWallMs, ended: null });
+      else if (out.get(e.sectionId)?.ended === null) out.get(e.sectionId)!.ended = e.endedAtWallMs;
+    }
+    return out;
+  };
+
+  it('a cold restart closes the ledger row of the section that was playing when it stopped', async () => {
+    const { store, wall, saved } = await played();
+    expect([...ledgerRows(store).values()].filter((r) => r.ended === null)).toHaveLength(1);
+    const clock = createFakeClock(9_000_000);
+    const again = createRoom({ store, clock, wall: { now: wall.now + (saved.savedAtServerMs - 1_000_000) + 60 * 60_000 }, config: { driver: 'external' } as never, newEpoch: () => 'ep2' });
+    await again.conductor.start();
+    const rows = ledgerRows(store);
+    const old = [...rows].filter(([id]) => id.startsWith('ep1-'));
+    expect(old.length).toBeGreaterThan(0);
+    for (const [, r] of old) expect(r.ended).not.toBeNull();
+    expect(Math.max(...old.map(([, r]) => r.ended!))).toBeLessThanOrEqual(saved.savedAtWallMs);
+  });
+
+  it('a warm restore records the sections that started during the downtime and closes the one before them', async () => {
+    const { store, wall, saved } = await played();
+    const [, long, longer] = saved.sections;
+    expect(ledgerRows(store).has(longer!.id)).toBe(false);
+    // Down long enough for Longer to have started (at cycle 84; the stop was just after 20).
+    const clock = createFakeClock(9_000_000);
+    const again = createRoom({ store, clock, wall: { now: wall.now + (saved.savedAtServerMs - 1_000_000) + 132_000 }, config: { driver: 'external' } as never });
+    await again.conductor.start();
+    expect(again.conductor.snapshot().epoch).toBe('ep1');
+    const rows = ledgerRows(store);
+    const startedAt = saved.savedAtWallMs + (msAtCycle(saved.timeline, longer!.startCycle) - saved.savedAtServerMs);
+    expect(rows.get(longer!.id)).toEqual({ started: startedAt, ended: null });
+    expect(rows.get(long!.id)!.ended).toBe(startedAt);
   });
 
   it('starts a new epoch after a long outage: cycles never go backwards, a scripted boot section plays', async () => {

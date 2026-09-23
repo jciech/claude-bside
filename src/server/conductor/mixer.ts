@@ -2,8 +2,8 @@
 // keyframes every client interpolates identically — at most one per bar, starting at least
 // MIN_CHANGE_LEAD ahead, ramping over 1 bar for small rooms and 2 for larger ones. A new keyframe is
 // only issued once the previous ramp has finished, so prev → next always reproduces what clients
-// were already playing. Also: the harsh-consensus safety trim, per-section balance trims, and the
-// needle (where the music is heading, in pad space).
+// were already playing. Also: the harsh-consensus safety trim and the needle (where the music is
+// heading, in pad space). Balance trims are not the mixer's: they travel with each part instance.
 import type { PadPoint } from '../../shared/protocol.ts';
 import type { MixerKeyframe, MixerState, SectionProgram } from '../../shared/program.ts';
 import { scoreBarAt } from '../../shared/schedule.ts';
@@ -18,20 +18,12 @@ const FAST_LANE_WEIGHT = 0.15;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const round2 = (x: number) => Math.round(x * 100) / 100;
 
-function sameTrims(a: Record<string, number>, b: Record<string, number>): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const k of keys) if ((a[k] ?? 0) !== (b[k] ?? 0)) return false;
-  return true;
-}
-
 export interface MixerTickInput {
   state: MixerState;
   nowCycle: number;
   /** Earliest integer cycle a new keyframe may start at (≥ now + MIN_CHANGE_LEAD). */
   earliestCycle: number;
   pull: { point: PadPoint; listeners: number };
-  /** Balance trims of the section sounding at earliestCycle. */
-  trims: Record<string, number>;
 }
 
 /** The next mixer state, or null when nothing needs to change yet. */
@@ -48,12 +40,11 @@ export function mixerTick(input: MixerTickInput): MixerState | null {
   // Small moves wait for a real step, except the final settle back to neutral.
   const moved = delta >= MACRO_STEP || (delta > 0 && macros.brightness === 0 && macros.intensity === 0);
   const expiredSafety = state.safety !== null && input.nowCycle >= state.safety.untilCycle;
-  if (!moved && sameTrims(input.trims, current.trimsDb) && !expiredSafety) return null;
+  if (!moved && !expiredSafety) return null;
   const next: MixerKeyframe = {
     atCycle: input.earliestCycle,
     rampBars: input.pull.listeners <= 3 ? 1 : 2,
     macros: moved ? macros : current.macros,
-    trimsDb: { ...input.trims },
   };
   return { rev: state.rev + 1, prev: current, next, safety: expiredSafety ? null : state.safety };
 }

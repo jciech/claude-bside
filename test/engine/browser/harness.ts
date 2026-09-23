@@ -95,12 +95,12 @@ function section(id: string, parts: SectionProgram['parts'], overrides: Partial<
 }
 
 function part(id: string, orbit: number, code: string, role: SectionProgram['parts'][number]['role']): SectionProgram['parts'][number] {
-  return { id, role, code, orbit, level: 0.8, enterBar: 0, exitBar: null, knobs: [], automation: [], duck: null, originCycle: 0, continues: false, carried: false, chromatic: false, instrument: id, digest: null };
+  return { id, role, code, orbit, level: 0.8, trimDb: 0, enterBar: 0, exitBar: null, knobs: [], automation: [], duck: null, originCycle: 0, continues: false, carried: false, chromatic: false, instrument: id, digest: null };
 }
 
 async function snapshotFor(t0: number): Promise<EngineSnapshot> {
   const timeline = { segments: [{ startMs: t0, startCycle: 0, cps: 0.5 }] };
-  const mixer = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 0 }, trimsDb: {} }, safety: null };
+  const mixer = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 0 } }, safety: null };
   if (mode === 'sync') {
     return { epoch: 'sync', rev: 1, timeline, mixer, sections: [section('sync-1', [part('blip', 1, 'note("c5*4").s("square").decay(0.04).sustain(0).gain(0.8)', 'lead')])] };
   }
@@ -282,8 +282,8 @@ hooks.__channel = (orbit: unknown) => internals.channel(orbit as number);
 hooks.__brighten = (atCycle: unknown) =>
   engine.setMixer({
     rev: 2,
-    prev: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 0 }, trimsDb: {} },
-    next: { atCycle: atCycle as number, rampBars: 1, macros: { brightness: 1, intensity: 0 }, trimsDb: {} },
+    prev: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 0 } },
+    next: { atCycle: atCycle as number, rampBars: 1, macros: { brightness: 1, intensity: 0 } },
     safety: null,
   });
 hooks.__acState = () => (engine.analyser()?.context as AudioContext | undefined)?.state ?? 'none';
@@ -294,7 +294,7 @@ hooks.__epoch = (startCycle: unknown) => {
     epoch: 'features-2',
     rev: 1,
     timeline: currentTimeline!,
-    mixer: { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 0 }, trimsDb: {} }, safety: null },
+    mixer: { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 0 } }, safety: null },
     sections: [section('g-1', [hats], { startCycle: startCycle as number })],
   });
 };

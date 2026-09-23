@@ -118,6 +118,40 @@ describe('ledger', () => {
     expect(ledger.recent(0)).toHaveLength(1);
   });
 
+  it('a row a restart left open is closed when the next section starts: it neither pins the window nor stays recent', () => {
+    const store = createMemoryStore();
+    const old = row({ at: T, endedAtWallMs: null });
+    createLedger({ store, log: createMemoryLog(), now: () => T }).record(old);
+    const DAY = 24 * 60 * MIN;
+    let now = T + 60 * MIN;
+    const later = createLedger({ store, log: createMemoryLog(), now: () => now });
+    for (; now < T + DAY; now += 45_000) {
+      const r = row({ at: now, endedAtWallMs: null, movementId: 'm2', shares: { vibraphone: 1 } });
+      later.record(r);
+      later.close(r.sectionId, now + 45_000, null);
+    }
+    // Two hours of 45 s sections, not a day's worth.
+    expect(later.recent(0).length).toBeLessThanOrEqual(165);
+    expect(later.recent(0).some((r) => r.sectionId === old.sectionId)).toBe(false);
+    expect(later.similar(old.fingerprint, 'other', now)?.sectionId).not.toBe(old.sectionId);
+    // The close was written down, bounded by how long a section can plausibly have played.
+    const replayed = createLedger({ store, log: createMemoryLog(), now: () => T + 30 * MIN });
+    expect(replayed.recent(0).find((r) => r.sectionId === old.sectionId)?.endedAtWallMs).toBe(T + 10 * MIN);
+  });
+
+  it('closes rows an older run left open behind later ones when the ledger is loaded', () => {
+    const store = createMemoryStore();
+    const a = row({ at: T, endedAtWallMs: null });
+    const b = row({ at: T + 3 * MIN, endedAtWallMs: null });
+    store.append(STORE_KEYS.ledger, { t: 'row', row: a });
+    store.append(STORE_KEYS.ledger, { t: 'row', row: b });
+    const ledger = createLedger({ store, log: createMemoryLog(), now: () => T + 5 * MIN });
+    expect(ledger.recent(0).map((r) => [r.sectionId, r.endedAtWallMs])).toEqual([
+      [a.sectionId, T + 3 * MIN],
+      [b.sectionId, null],
+    ]);
+  });
+
   it('cooldown: loudness share ≥ 0.25 in 3 of the last 6 counted rows, for 20 minutes; autopilot and empty-room rows never count', () => {
     const ledger = createLedger({ store: createMemoryStore(), log: createMemoryLog(), now: () => T });
     ledger.record(row({ at: T, shares: { sbd: 0.6, vibraphone: 0.4 } }));

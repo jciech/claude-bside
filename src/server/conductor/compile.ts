@@ -7,7 +7,7 @@ import type { Automation, Knob, Plan, SectionPlan } from '../../shared/plan.ts';
 import type { PartRole, SectionRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
 import type { CheckSectionInput } from '../types.ts';
-import { vampLoopFor } from '../../shared/schedule.ts';
+import { influenceCycle, vampLoopFor } from '../../shared/schedule.ts';
 import { levelAt } from './knobs.ts';
 import { patternBarAt } from './placement.ts';
 
@@ -126,10 +126,32 @@ export function checkInputFor(plan: SectionPlan, parts: readonly ResolvedPart[],
   };
 }
 
-/** Lowest orbits first; continuing parts keep theirs; nothing the previous section used is reused. */
-export function assignOrbits(parts: readonly ResolvedPart[], prev: SectionProgram | null): Map<string, number> {
+/** Longest channel release after an instance stops (the performer's roleReleaseBars). */
+const RELEASE_BARS = 1;
+
+/**
+ * Orbits that instances of the sections in `chain` (in order, each followed by the next) may still
+ * sound on at `cycle`: a section's parts play until its successor starts, through the successor's
+ * crossfade, plus their release. The last section of the chain is left out (its successor is new).
+ */
+export function orbitsSoundingAt(chain: readonly SectionProgram[], cycle: number): Set<number> {
+  const out = new Set<number>();
+  chain.forEach((s, i) => {
+    const next = chain[i + 1];
+    if (!next) return;
+    const end = next.startCycle + (next.transitionIn.type === 'crossfade' ? next.transitionIn.bars : 0) + RELEASE_BARS;
+    if (end > cycle) for (const p of s.parts) out.add(p.orbit);
+  });
+  return out;
+}
+
+/**
+ * Lowest orbits first; continuing parts keep theirs; nothing the previous section used is reused, nor
+ * an orbit an earlier instance still sounds on (`busy`).
+ */
+export function assignOrbits(parts: readonly ResolvedPart[], prev: SectionProgram | null, busy: ReadonlySet<number> = new Set()): Map<string, number> {
   const out = new Map<string, number>();
-  const taken = new Set(prev?.parts.map((p) => p.orbit) ?? []);
+  const taken = new Set([...(prev?.parts.map((p) => p.orbit) ?? []), ...busy]);
   const used = new Set<number>();
   for (const p of parts) {
     const before = prev?.parts.find((x) => x.id === p.id);
@@ -185,13 +207,17 @@ export interface CompileInput {
   provisional: boolean;
   /** The program this one follows (the anchor, or the plan's previous section). */
   prev: SectionProgram | null;
+  /** The sections before `prev`, in order: their crossfade tails and releases may still be sounding. */
+  earlier?: readonly SectionProgram[];
   check: SectionCheck;
 }
 
-export function compileSection(input: CompileInput): { program: SectionProgram; trims: Record<string, number> } {
+export function compileSection(input: CompileInput): SectionProgram {
   const { plan, parts, prev, check, startCycle } = input;
   const checks = parts.map((p) => check.parts.find((c) => c.id === p.id));
-  const orbits = assignOrbits(parts, prev);
+  const trims = balanceTrims(parts, checks);
+  const from = influenceCycle({ startCycle, transitionIn: plan.transitionIn, parts });
+  const orbits = assignOrbits(parts, prev, prev ? orbitsSoundingAt([...(input.earlier ?? []), prev], from) : new Set());
   const programParts: ProgramPart[] = parts.map((p, i) => {
     const before = prev?.parts.find((x) => x.id === p.id);
     const continues = p.continues && !!before;
@@ -203,6 +229,7 @@ export function compileSection(input: CompileInput): { program: SectionProgram; 
       code: p.code,
       orbit: orbits.get(p.id)!,
       level: p.level,
+      trimDb: trims[p.id] ?? 0,
       enterBar: p.enterBar,
       exitBar: p.exitBar,
       knobs: p.knobs,
@@ -219,7 +246,7 @@ export function compileSection(input: CompileInput): { program: SectionProgram; 
     };
   });
   const spans = check.mix?.spans;
-  const program: SectionProgram = {
+  return {
     id: input.id,
     rev: 1,
     index: input.index,
@@ -242,7 +269,6 @@ export function compileSection(input: CompileInput): { program: SectionProgram; 
     publicNote: plan.publicNote,
     author: input.author,
   };
-  return { program, trims: balanceTrims(parts, checks) };
 }
 
 /**

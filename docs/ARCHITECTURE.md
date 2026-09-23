@@ -200,8 +200,11 @@ Tempo is part of the section: `bpm` + `tempoRampBars` + `tempoRampAt` ('start' o
 5. **Placement and compile** under the lock: `startCycle` on the next 4-bar line after the locked
    horizon whose lock point is still ahead; `originCycle`/`continues` for carried parts; orbits
    (continuing parts keep theirs; otherwise the lowest of 1–24 unused by the previous and current
-   section); duck targets → orbits; instrument labels; measured spans; trims toward role loudness
-   targets from the catalog's measured levels.
+   section and by any earlier instance still sounding at the section's influence cycle — a crossfade
+   tail or release under a pickup or a cut-in); duck targets → orbits; instrument labels; measured
+   spans; each part instance's trim toward its role's loudness target from the catalog's measured
+   levels (`ProgramPart.trimDb`, so it holds from the instance's first sound and a same-id part
+   crossfading against itself keeps its own).
 6. **Schedule**: rebuild the timeline, bump `rev`, persist the session, broadcast one atomic
    `schedule` update (movements, upserts, revokes). Replaced provisional sections are revoked in
    the same update, never before the replacement is accepted.
@@ -217,7 +220,7 @@ compile(code)                                   // same static allowlist; scope 
   → window [enterBar, exitBar)                  // re-onset at entry, truncate + release at exit
   → engine keys: orbit, duck, namespaced cut
   → guard                                       // throws, density and time budget → part muted
-channel(instance) = filter → gain               // level × automation × transitions × macros × trims,
+channel(instance) = filter → gain               // level × automation × transitions × macros × its trim,
                                                 // as AudioParam ramps at the audio time of each cycle
 ```
 
@@ -272,7 +275,10 @@ driver just awaits that). `setDriver` aborts whatever is in flight.
 
 **Horizon.** Locked music = the playing section plus the next one. A plan's second section is
 **provisional**: broadcast at once (clients preload) but replaceable by a crowd replan until its
-lock point. A planning request starts when locked, unplayed music drops below
+lock point, or until a later plan follows it (it then stops being provisional). A replan is only
+issued with time to compose it (max(20 s, p90) before the replaced slot's deadline); otherwise its
+reasons ride with the next request. A replan that misses its deadline leaves the provisional section
+standing and doesn't count as a Claude failure. A planning request starts when locked, unplayed music drops below
 `max(120 s, p90 compose time + 8 s + 2 bars + 20 s)`, or earlier on a coalesced event: crowd
 pressure, move-on with no successor, a closed fork, a request surge, a guardrail, or a movement ≥ 12
 minutes old (kind `movement`; skipped while the room is clearly loving it, hard cap 20 minutes). A
@@ -281,6 +287,12 @@ plan adds between max(16 bars, 60 s) and max(48 bars, 100 s).
 **Deadlines.** `softDeadlineMs` = the target's lock point − preload − 3 s of accept budget;
 `hardDeadlineMs` = soft + 2 phrases. At the soft deadline, if the tail may vamp, Claude keeps going
 until the hard deadline; otherwise the scripted driver commits a pre-validated section immediately.
+The deadlines assume a cut: a pre-roll of n bars (riser, breath, filter, pickups) has to arrive n
+bars earlier. After a section that must not vamp, a plan whose pre-roll no longer fits before that
+section ends is refused (`lead-time`, naming the pre-roll that still fits) rather than placed late.
+The deadlines follow the section the plan comes after: a Stay or Move on moves them with its end.
+A composer failure never moves them out: a retry keeps what was left of the failed request's slot,
+and when a retry could no longer compose in time (p90), the autopilot takes the slot at once.
 A plan written against an older `scheduleRev` is re-validated against the current schedule and only
 fails (`stale-context`) if a rule actually breaks.
 
@@ -371,7 +383,9 @@ min); ballots are aggregated with the same silent-majority prior and smoothed wi
 act alone), acts if the change can still be made before the relevant lock point; the signal repeats
 every bar while the lean holds. Stay: one repeated phrase (at most 2 per section; never for intro,
 build or transition). Move on: jump to the final phrase at the next 8-bar line (a build may be
-shortened); with no successor committed, it requests a plan with reason `move-on`. `keepPending` in
+shortened), cancelling a Stay not yet reached; with no successor committed, it requests a plan with
+reason `move-on`. Both measure from where the section really ends: a successor committed with
+`--next`/`--now` may cut in before its planned end (Stay then repeats the phrase before the cut). `keepPending` in
 the crowd frame tells the dock what is happening ("moving on at bar 72", "this track ends in 6 bars
 anyway", "already held twice"); `blocked` is `min-length`, `next-not-ready`, `role`, `locked` (too
 close to a lock point) or `max` (already extended twice).
@@ -421,7 +435,9 @@ the current budget state so nobody violates them blindly):
 - Peak: target intensity ≥ max(0.8, baseline + 0.25) for ≤ 3 min per 10 min; no three peaks in a row.
 - Floor: ≤ 0.2 for ≤ 4 min per 10 min, unless the movement is ambient (baseline ≤ 0.3 or groove free).
 - A `build` must *measure* ≥ 0.2 more tense/intense at its end than its start (measured spans), and
-  the following section starts lower.
+  the following section starts lower. Automation lanes count too, since the checker plays code at
+  static faders and default knobs: fading the mix up scales its measured start down, and knobs swept
+  toward their bright/intense end (toward max when they follow nothing) count as rising tension.
 - Same role at most twice in a row (`groove` three times); minimum 16 bars except `transition`.
 - Tempo: section bpm within ±4 of its movement; ramps ≥ 4 bars per 4 BPM; a new movement moves ≤ 12
   BPM unless through a beatless bridge (a section with no percussive parts) or half/double time.
@@ -531,7 +547,9 @@ depth:
   every schedule change — epoch, rev, counters, timeline, movements (with baseline, crate, form,
   motifs, last rationale), sections, mixer, recent notes.
 - **Ledger** (`ledger.v1`): append-only JSONL, one row per section at its bar 0 (revoked sections
-  never enter it), in memory for the last 2 hours.
+  never enter it), in memory for the last 2 hours. A new epoch closes the row of what was playing at
+  the stop; a warm restore records the sections that started during the downtime; a row still open
+  when a later one starts is closed then (at most 10 minutes after its own start).
 - **Boot.** If the persisted committed horizon still covers the downtime plus the preload lead, the
   same epoch is restored with every `startMs` rebased by the difference between the old and new
   server-clock bases. Otherwise a new epoch starts at `ceil(lastCycle) + 8` (cycles never go

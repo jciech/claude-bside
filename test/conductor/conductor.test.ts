@@ -140,6 +140,23 @@ describe('commit pipeline', () => {
     expect(auto.warnings.find((w) => w.rule === 'dramaturgy')!.message).toMatch(/relaxed for the autopilot/);
   });
 
+  it('a build that rises only through its automation lanes is accepted; a flat one is refused with a hint that works', async () => {
+    const room = await boot();
+    const lane = (target: string, from: number, to: number) => ({ target, fromBar: 0, toBar: 16, from, to, curve: 'exp' as const });
+    const cut = { name: 'cut', default: 300, min: 200, max: 8000, follows: 'brightness' as const };
+    const build = (parts: ReturnType<typeof part>[]) => plan([section({ role: 'build', name: 'Swell', parts })]);
+    const flat = await room.conductor.commit({ plan: build([part('kick'), part('pad', { code: 's("sawtooth").lpf(knob("cut"))', knobs: [cut] })]) }, 'external');
+    expect(flat.errors.map((e) => e.rule)).toEqual(['dramaturgy']);
+    expect(flat.errors[0]!.hint).toMatch(/level lanes/);
+    const swell = build([
+      part('kick', { automation: [lane('level', 0.2, 1)] }),
+      part('pad', { code: 's("sawtooth").lpf(knob("cut"))', knobs: [cut], automation: [lane('knob:cut', 300, 8000), lane('level', 0.1, 1)] }),
+    ]);
+    const r = await room.conductor.commit({ plan: swell }, 'external');
+    expect(r.errors).toEqual([]);
+    expect(r.accepted).toBe(true);
+  });
+
   it('tempo rules bind the autopilot too', async () => {
     const room = await boot();
     const r = await room.conductor.commit({ plan: plan([section({ bpm: 130 })]) }, 'scripted');
@@ -168,6 +185,34 @@ describe('commit pipeline', () => {
     expect(bpmsAt(snap.timeline, [opened.startCycle - 1, opened.startCycle + 4, opened.startCycle + 8])).toEqual([120, 124, 128]);
     await room.clock.toCycle(opened.startCycle);
     expect(room.broadcaster.of('note').filter((n) => n.kind === 'movement').at(-1)).toMatchObject({ text: 'Side Two: A slow tide.', sectionId: opened.id });
+  });
+
+  it('a side revoked before it plays gives its number back: the replacement is the next side, not one after', async () => {
+    const room = await boot();
+    await room.clock.toCycle(sectionsOf(room)[0]!.startCycle + 1);
+    const opening = (name: string, i: number) =>
+      plan([section({ role: 'bridge', name: `Close ${i}` }), section({ role: 'intro', name, bpm: 124, tempoRampBars: 4 })], { movement: movement({ name, startsAtSection: 1, bpm: 124 }) });
+    expect((await room.conductor.commit({ plan: opening('Side Two', 1) }, 'scripted')).accepted).toBe(true);
+    expect(room.conductor.snapshot().movements.map((m) => [m.side, m.name])).toEqual([[1, expect.any(String)], [2, 'Side Two']]);
+    // A --next commit replaces both unlocked sections, and with them the side they opened.
+    const again = plan([section({ role: 'intro', name: 'Take Two', bpm: 124, tempoRampBars: 4 })], { movement: movement({ name: 'Take Two', bpm: 124 }) });
+    expect((await room.conductor.commit({ plan: again, mode: 'next' }, 'scripted')).accepted).toBe(true);
+    expect(room.conductor.snapshot().movements.map((m) => [m.side, m.name])).toEqual([[1, expect.any(String)], [2, 'Take Two']]);
+  });
+
+  it('a cut-in is checked against the tempo actually playing where it starts, not the section\'s end tempo', async () => {
+    const room = await boot();
+    // Ramp holds 120 BPM for 16 bars, then ramps into 124 by its end.
+    await room.conductor.commit({ plan: plan([section({ role: 'bridge', name: 'Ramp', bars: 32, bpm: 124, tempoRampBars: 16, tempoRampAt: 'end' })]) }, 'external');
+    const ramp = tail(room);
+    await room.clock.toCycle(ramp.startCycle + 1);
+    const cutIn = (tempoRampBars: number) => plan([section({ role: 'groove', name: 'Cut In', bpm: 124, tempoRampBars })]);
+    const jump = await room.conductor.commit({ plan: cutIn(0), mode: 'next' }, 'external');
+    expect(jump.accepted).toBe(false);
+    expect(jump.errors).toContainEqual(expect.objectContaining({ rule: 'tempo', message: expect.stringMatching(/from 120\)/) }));
+    const ramped = await room.conductor.commit({ plan: cutIn(4), mode: 'next' }, 'external');
+    expect(ramped.accepted).toBe(true);
+    expect(ramped.sections[0]!.startCycle).toBeLessThan(ramp.startCycle + 16);
   });
 
   it('a new movement must dig into its crate', async () => {
@@ -294,6 +339,24 @@ describe('crowd each bar', () => {
     const tl = room.conductor.snapshot().timeline;
     expect(msAtCycle(tl, m.next.atCycle)).toBeGreaterThanOrEqual(room.clock.now() + 4000);
     expect(m.next.rampBars).toBe(1);
+  });
+
+  it('balance trims travel with each section\'s own instances, so they hold from bar 0 whatever the pad does', async () => {
+    const room = await boot();
+    room.crowd.listeners = 5;
+    const hats = (rms: number) => part('hats', { code: `s("white*8").gain(0.8) // rms${rms}` });
+    await room.conductor.commit({ plan: plan([section({ role: 'bridge', name: 'A', parts: [part('kick'), hats(-40)] })]) }, 'external');
+    await room.conductor.commit({ plan: plan([section({ role: 'groove', name: 'B', parts: [part('kick', { code: null }), hats(-2)] })]) }, 'external');
+    const [, a, b] = sectionsOf(room);
+    expect(a!.parts.find((p) => p.id === 'hats')!.trimDb).toBe(3);
+    expect(b!.parts.find((p) => p.id === 'hats')!.trimDb).toBe(-6);
+    expect(a!.parts.find((p) => p.id === 'kick')!.trimDb).toBe(0);
+    // The room keeps moving the pad across both starts; the fast lane carries macros only.
+    for (let bar = 0; bar < b!.startCycle + 4; bar++) {
+      room.crowd.pullPoint = { x: bar % 2 ? 0.3 : 0, y: 0 };
+      await room.clock.advance(2000);
+    }
+    for (const m of room.broadcaster.of('mixer')) expect(Object.keys(m.next)).toEqual(['atCycle', 'rampBars', 'macros']);
   });
 });
 

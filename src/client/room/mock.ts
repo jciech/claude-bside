@@ -397,7 +397,7 @@ export async function createMockRoom(options: RoomOptions, overrides: Partial<Mo
     const macros = { brightness: Math.round(pull.x * 100) / 100, intensity: Math.round(pull.y * 100) / 100 };
     const cur = mixer.next.macros;
     if (Math.abs(cur.brightness - macros.brightness) < 0.05 && Math.abs(cur.intensity - macros.intensity) < 0.05) return;
-    mixer = { rev: mixer.rev + 1, prev: mixer.next, next: { atCycle: b + 1, rampBars: 1, macros, trimsDb: {} }, safety: null };
+    mixer = { rev: mixer.rev + 1, prev: mixer.next, next: { atCycle: b + 1, rampBars: 1, macros }, safety: null };
     engine.setMixer(mixer);
     stores.mixer.set(mixer);
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyBrightness, intensityDb, knobAt, laneValue, levelAt, macrosAt, safetyAt, trimDbAt } from '../../src/client/engine/knobs.ts';
+import { applyBrightness, intensityDb, knobAt, laneValue, levelAt, macrosAt, safetyAt } from '../../src/client/engine/knobs.ts';
 import { laneValue as conductorLaneValue } from '../../src/server/conductor/knobs.ts';
 import type { Automation, Knob } from '../../src/shared/plan.ts';
 import type { MixerState } from '../../src/shared/program.ts';
@@ -60,8 +60,8 @@ describe('knobAt', () => {
 describe('mixer interpolation (pure function of cycle)', () => {
   const state: MixerState = {
     rev: 3,
-    prev: { atCycle: 10, rampBars: 1, macros: { brightness: 0.2, intensity: -0.4 }, trimsDb: { bass: -2 } },
-    next: { atCycle: 20, rampBars: 2, macros: { brightness: 1, intensity: 0.4 }, trimsDb: { bass: 1, pad: -3 } },
+    prev: { atCycle: 10, rampBars: 1, macros: { brightness: 0.2, intensity: -0.4 } },
+    next: { atCycle: 20, rampBars: 2, macros: { brightness: 1, intensity: 0.4 } },
     safety: { masterDb: -3, highShelfDb: -3, fromCycle: 30, untilCycle: 46 },
   };
 
@@ -76,13 +76,6 @@ describe('mixer interpolation (pure function of cycle)', () => {
 
   it("uses next's values throughout when there is no previous keyframe", () => {
     expect(macrosAt({ ...state, prev: null }, 0)).toEqual({ brightness: 1, intensity: 0.4 });
-  });
-
-  it('interpolates trims in dB, missing ids at 0 dB', () => {
-    expect(trimDbAt(state, 'bass', 0)).toBe(-2);
-    expect(trimDbAt(state, 'bass', 21)).toBeCloseTo(-0.5);
-    expect(trimDbAt(state, 'pad', 21)).toBeCloseTo(-1.5);
-    expect(trimDbAt(state, 'kick', 21)).toBe(0);
   });
 
   it('ramps the safety trim in after fromCycle and out before untilCycle', () => {

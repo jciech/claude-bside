@@ -15,7 +15,7 @@ import {
   vampAllowed,
 } from '../../src/server/conductor/compile.ts';
 import { knobValuesAt, laneValue, levelAt } from '../../src/server/conductor/knobs.ts';
-import { createFakeChecker, part, section } from './harness.ts';
+import { createFakeChecker, createRoom, part, plan, section } from './harness.ts';
 
 const snapshot: RoomSnapshot = JSON.parse(readFileSync(new URL('../fixtures/snapshot.json', import.meta.url), 'utf8'));
 const [first, second] = snapshot.sections as [SectionProgram, SectionProgram];
@@ -72,7 +72,7 @@ describe('carried parts', () => {
       const plan = section({ bars, parts: [part('lead', { code: 's("square")' })] });
       const { parts } = resolveSection(plan, null, 'sections[0]');
       const input = checkInputFor(plan, parts, new Map());
-      const { program } = compileSection({ id: 's', index: 0, track: 0, movementId: 'm', author: 'external', startCycle: 0, plan, parts, provisional: false, prev: null, check: await checkOf(input) });
+      const program = compileSection({ id: 's', index: 0, track: 0, movementId: 'm', author: 'external', startCycle: 0, plan, parts, provisional: false, prev: null, check: await checkOf(input) });
       expect(input.vampLoopBars, `${bars} bars`).toBe(program.vamp.loopBars);
     }
     expect(checkInputFor(section({ bars: 8 }), [], new Map()).vampLoopBars).toBe(4);
@@ -98,6 +98,40 @@ describe('orbits', () => {
     expect(first.parts.map((p) => p.orbit)).not.toContain(orbits.get('pad'));
   });
 
+  it('never reuses an orbit that a section two back still sounds on (its crossfade tail under a pickup)', async () => {
+    const room = createRoom({ config: { driver: 'external' } as never });
+    await room.conductor.start();
+    const boot = room.conductor.snapshot().sections[0]!;
+    const r = await room.conductor.commit(
+      {
+        plan: plan([
+          section({ role: 'transition', name: 'B', bars: 8, transitionIn: { type: 'crossfade', bars: 4 }, parts: [part('b1', { code: 's("sine")' }), part('b2', { code: 's("square")' })] }),
+          section({ role: 'groove', name: 'C', parts: [part('fill', { code: 's("white")', enterBar: -8 }), part('c2', { code: 's("sawtooth")' })] }),
+        ]),
+      },
+      'external',
+    );
+    expect(r.accepted).toBe(true);
+    const [, b, c] = room.conductor.snapshot().sections;
+    // The boot section fades out under B until bar 4 of B, while C's fill already plays from B's bar 0.
+    const busy = new Set([...boot.parts, ...b!.parts].map((p) => p.orbit));
+    for (const p of c!.parts) expect(busy.has(p.orbit)).toBe(false);
+  });
+
+  it('a cut-in during a crossfade avoids the orbits still fading out', async () => {
+    const room = createRoom({ config: { driver: 'external' } as never });
+    await room.conductor.start();
+    const boot = room.conductor.snapshot().sections[0]!;
+    const fade = await room.conductor.commit({ plan: plan([section({ role: 'bridge', name: 'Fade', transitionIn: { type: 'crossfade', bars: 8 }, parts: [part('f1', { code: 's("sine")' }), part('f2', { code: 's("square")' })] })]) }, 'external');
+    expect(fade.accepted).toBe(true);
+    await room.clock.toCycle(fade.sections[0]!.startCycle);
+    const now = await room.conductor.commit({ plan: plan([section({ role: 'interlude', name: 'Now', parts: [part('x1', { code: 's("sawtooth")' })] })]), mode: 'now' }, 'external');
+    expect(now.accepted).toBe(true);
+    const cutIn = room.conductor.snapshot().sections.find((s) => s.name === 'Now')!;
+    expect(cutIn.startCycle).toBeLessThan(fade.sections[0]!.startCycle + 8);
+    expect(boot.parts.map((p) => p.orbit)).not.toContain(cutIn.parts[0]!.orbit);
+  });
+
   it('stays within 1..24 with eight parts on each side', () => {
     const prev = { ...first, parts: Array.from({ length: 8 }, (_, i) => ({ ...first.parts[0]!, id: `p${i}`, orbit: i + 1 })) };
     const plan = section({ parts: Array.from({ length: 8 }, (_, i) => part(`q${i}`, { code: 's("sine")' })) });
@@ -120,7 +154,7 @@ describe('compileSection', () => {
     });
     const { parts } = resolveSection(plan, first, 'sections[0]');
     const check = await checkOf(checkInputFor(plan, parts, continuingPatternBars(parts, first, 16)));
-    const { program } = compileSection({ id: 'x-0002', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 16, plan, parts, provisional: true, prev: first, check });
+    const program = compileSection({ id: 'x-0002', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 16, plan, parts, provisional: true, prev: first, check });
     const byId = Object.fromEntries(program.parts.map((p) => [p.id, p]));
     expect(byId.kick).toMatchObject({ orbit: 1, originCycle: 0, continues: true, carried: true, duck: { orbits: [3], depth: 0.5, releaseSec: 0.2 } });
     expect(byId.bass).toMatchObject({ orbit: 3, originCycle: 0, continues: true, knobs: first.parts[2]!.knobs });
@@ -134,7 +168,7 @@ describe('compileSection', () => {
     const { parts } = resolveSection(plan, first, 's');
     // first (16 bars, loop 8) vamped until 20: pattern bar 12 → origin 20 − 12 = 8.
     const check = await checkOf(checkInputFor(plan, parts, continuingPatternBars(parts, first, 20)));
-    const { program } = compileSection({ id: 'x', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 20, plan, parts, provisional: false, prev: first, check });
+    const program = compileSection({ id: 'x', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 20, plan, parts, provisional: false, prev: first, check });
     expect(program.parts[0]!.originCycle).toBe(8);
   });
 

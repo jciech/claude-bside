@@ -13,6 +13,7 @@ export function part(overrides: Partial<ProgramPart> & { id: string }): ProgramP
     code: 'note("c4")',
     orbit: 1,
     level: 1,
+    trimDb: 0,
     enterBar: 0,
     exitBar: null,
     knobs: [],

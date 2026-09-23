@@ -55,10 +55,21 @@ describe('instance gain', () => {
     expect(gain('fx01-0002:fill', 16.25)).toBe(0);
   });
 
-  it('applies the intensity macro and trims', () => {
-    const mixer: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 1 }, trimsDb: { kick: -6 } }, safety: null };
-    expect(gain('fx01-0001:kick', 8, mixer)).toBeCloseTo(0.9 * 10 ** (-3 / 20));
-    expect(gain('fx01-0001:pad', 8, mixer)).toBeCloseTo(0.5 * 10 ** (-2 / 20));
+  it('applies the intensity macro and the instance\'s balance trim', () => {
+    const mixer: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0, intensity: 1 } }, safety: null };
+    const trimmed = buildScore([{ ...sectionA, parts: sectionA.parts.map((p) => (p.id === 'kick' ? { ...p, trimDb: -6 } : p)) }], new Map());
+    expect(instanceGainAt(trimmed.byKey.get('fx01-0001:kick')!, 8, mixer)).toBeCloseTo(0.9 * 10 ** (-3 / 20));
+    expect(instanceGainAt(trimmed.byKey.get('fx01-0001:pad')!, 8, mixer)).toBeCloseTo(0.5 * 10 ** (-2 / 20));
+  });
+
+  it('a rewritten same-id part crossfades against itself, each instance at its own trim from its first bar', () => {
+    const withTrim = (s: typeof sectionA, db: number) => ({ ...s, parts: s.parts.map((p) => (p.id === 'hats' ? { ...p, trimDb: db } : p)) });
+    const trimmed = buildScore([withTrim(sectionA, 3), withTrim(sectionB, -6)], new Map());
+    const at = (key: string, c: number) => instanceGainAt(trimmed.byKey.get(key)!, c, EMPTY_MIXER);
+    expect(at('fx01-0001:hats', 16)).toBeCloseTo(0.6 * 10 ** (3 / 20));
+    expect(at('fx01-0001:hats', 17)).toBeCloseTo(0.6 * Math.SQRT1_2 * 10 ** (3 / 20));
+    expect(at('fx01-0002:hats', 17)).toBeCloseTo(0.6 * Math.SQRT1_2 * 10 ** (-6 / 20));
+    expect(at('fx01-0002:hats', 18)).toBeCloseTo(0.6 * 10 ** (-6 / 20));
   });
 
   it('cuts and releases over a bar for non-percussive parts at a cut, faster before a breath', () => {
@@ -100,7 +111,7 @@ describe('what an instance plays with (Engine.levelAt / knobValues)', () => {
     expect(instanceKnobsAt(inst('fx01-0001:bass'), 4, EMPTY_MIXER)).toEqual({ cut: 800 });
     expect(instanceKnobsAt(inst('fx01-0001:bass'), 12, EMPTY_MIXER).cut).toBeCloseTo(Math.sqrt(400 * 1200));
     expect(instanceKnobsAt(inst('fx01-0002:bass'), 20, EMPTY_MIXER).cut).toBeCloseTo(1200);
-    const brighter: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0.5, intensity: 0 }, trimsDb: {} }, safety: null };
+    const brighter: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0.5, intensity: 0 } }, safety: null };
     expect(instanceKnobsAt(inst('fx01-0002:bass'), 20, brighter).cut).toBeCloseTo(1200 + 0.5 * 1050);
     expect(instanceKnobsAt(inst('fx01-0002:kick'), 20, brighter)).toEqual({});
   });
