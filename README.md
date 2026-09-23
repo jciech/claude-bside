@@ -1,206 +1,102 @@
-# Claude B-Side
+# B-Side
 
-A collaborative AI music streaming platform where Claude generates live music using Strudel, and multiple users can provide real-time feedback to shape the music together.
+**A record Claude is cutting live.** B-Side is a listening room where Claude composes music as
+[Strudel](https://strudel.cc) code, every listener's browser plays it in sync, and the room steers
+where it goes — pulling the mood brighter or darker, calmer or more intense, asking for things,
+voting on what comes next.
 
-**Perfect for remote listening parties**: 50+ people can listen to the same AI-generated music stream, giving feedback that shapes what plays next!
+The music is performed in your browser from code, not streamed as audio: you can watch the exact
+Strudel that is playing, with the sounding notes lit up as they play, while the record turns — one
+revolution per bar.
 
-## Features
+## How it works
 
-- **Seamless auto-play**: One click starts continuous music playback
-- **Real-time collaborative streaming**: Everyone hears the same music simultaneously
-- **Hybrid agentic loop**: Fast micro-variations (15s) + feedback-driven major changes
-- **Multi-user feedback**: Like/dislike buttons and text suggestions
-- **Style memory**: Learns from community preferences over time
-- **Passive listening**: Click once, then listen for hours
+- **Claude composes** one or two sections at a time (16–64 bars each), as structured plans of
+  Strudel parts with levels, entries and exits, knobs, automation and transitions. It auditions its
+  code against a real Strudel evaluator before committing, and writes liner notes explaining what
+  it's doing and whose request it is answering.
+- **The conductor** (a deterministic server) validates every line of code against a strict
+  allowlist, measures what it actually sounds like (density, register, brightness, intensity — from
+  the events, never from guesses), enforces musical and safety rules, and schedules sections on a
+  shared timeline. If Claude is late, the music keeps going; if it fails, an autopilot continues.
+- **Every browser performs** the same timeline, synced to the server clock to within milliseconds,
+  with smooth fades, crossfades, risers and a limiter — and a record that draws each part into the
+  groove as it plays.
+- **The room steers** through a shared pull pad (dark ↔ bright × calm ↔ intense), Stay / Move on,
+  reactions, requests and votes. Influence is gradual and shared: the mixer answers within a bar or
+  two, the structure at the next section, and no single listener can yank it around.
 
-## How It Works
+The design is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (system),
+[`docs/DESIGN.md`](docs/DESIGN.md) (visual identity) and [`docs/COMPOSING.md`](docs/COMPOSING.md)
+(writing music for the room, by hand or with Claude).
 
-### For Listeners
+## Running it
 
-1. **Click "Start Listening"** - One-time button click to initialize audio
-2. **Music plays automatically** - New patterns every 15 seconds, seamless transitions
-3. **Give feedback anytime** - Like, dislike, or suggest changes
-4. **Listen passively** - No more clicking required, just enjoy!
-
-### Under the Hood
-
-1. **Queue Processor**: Transitions patterns on bar boundaries based on BPM
-2. **Claude Generation Loop**: Maintains 4-6 patterns in queue, checks every 20s
-3. **Musical timing**: 120 BPM, patterns specify duration in bars (4, 8, 16, 32)
-4. **Feedback triggers changes**: 2+ pieces of feedback → queue regeneration
-5. **Style learning**: System tracks what the community likes
-6. **Auto-start**: Both queue processor and agent start when server boots
-
-## Tech Stack
-
-- **Backend**: Node.js, Express, Socket.io
-- **Frontend**: Vite + vanilla JS, Strudel libraries (@strudel/core, @strudel/webaudio)
-- **AI**: Anthropic Claude Sonnet 4.5
-- **Audio**: Web Audio API via Strudel
-
-## Quick Start
-
-### 1. Install Dependencies
+Requires Node ≥ 22.18.
 
 ```bash
 npm install
+npm run dev            # http://localhost:3000 — server + client with hot reload, one process
 ```
 
-### 2. Set Up API Key
-
-Create a `.env` file:
-```bash
-echo "ANTHROPIC_API_KEY=your_api_key_here" > .env
-```
-
-Or export it:
-```bash
-export ANTHROPIC_API_KEY=your_api_key_here
-```
-
-### 3. Start the Backend Server
+Without an API key the room runs on the **scripted autopilot** (a library of verified sections).
+To let Claude compose:
 
 ```bash
-npm run server
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+npm run dev
 ```
 
-Server runs on http://localhost:3000
+Production:
 
-### 4. Start the Frontend Dev Server
-
-In a **separate terminal**:
 ```bash
-npm run client
+npm run build
+BSIDE_ADMIN_TOKEN=... npm start
 ```
 
-Vite dev server runs on http://localhost:5173
+## Composing by hand
 
-### 5. Open in Browser
+The composer is an interface with three drivers — Claude, the scripted autopilot, and **external**:
+anyone (you, a script, Claude Code) can compose over HTTP with the same context and the same
+checks Claude gets.
 
-Navigate to **http://localhost:5173**
+```bash
+npm run bside -- driver external     # hand the room to the external driver
+npm run bside -- context             # what a composer sees right now
+npm run bside -- audition --role bass --code 'n("0 3 5 7").scale("D2:dorian").s("sawtooth").lpf(600)'
+npm run bside -- commit plan.json --next
+npm run bside -- watch               # planning requests and section starts, live
+```
 
-**Click "🎧 Start Listening"** and enjoy continuous AI-generated music!
-
-## Important Notes
-
-- **Queue-based system**: Patterns are queued and transition on musical bar boundaries
-- **Musical timing**: Runs at 120 BPM by default with bar-synchronized transitions
-- **Samples & synthesis**: Uses switchangel breaks/pads plus built-in synths
-- **One click to start**: Browser requires user interaction to enable audio
-- **Auto-play**: New patterns transition automatically based on bar duration
-- **Claude controls the queue**: AI manages 4-6 patterns ahead, adapts to feedback
+See [`docs/COMPOSING.md`](docs/COMPOSING.md) for the plan format and a worked session.
 
 ## Development
 
-### Run Both Servers
-
-Terminal 1:
 ```bash
-npm run server:dev  # Backend with auto-reload
+npm test               # unit + integration tests (vitest)
+npm run test:e2e       # end-to-end in headless Chromium (scripted composer, no API key)
+npm run typecheck      # tsc + svelte-check
+npm run catalog        # rebuild the sound catalog from pinned sample repositories
 ```
 
-Terminal 2:
-```bash
-npm run client  # Frontend with HMR
-```
+| Env | Default | |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Enables the Claude composer |
+| `BSIDE_COMPOSER` | `claude` if a key is set, else `scripted` | Initial composer driver |
+| `BSIDE_MODEL` | `claude-opus-5` | |
+| `BSIDE_MAX_PLANS_PER_HOUR` | 90 | Budget on Claude compose calls |
+| `BSIDE_ADMIN_TOKEN` | — | Guards the composer API (required in production) |
+| `BSIDE_TRUST_PROXY` | 0 | Reverse-proxy hops to trust for client addresses |
+| `BSIDE_DATA_DIR` | `./data` | Session and ledger persistence |
+| `PORT` | 3000 | |
 
-### Available Scripts
+The original proof of concept lives in `legacy/` for reference.
 
-- `npm run server` - Start backend server
-- `npm run server:dev` - Start backend with auto-reload
-- `npm run client` - Start Vite dev server
-- `npm run client:build` - Build production frontend
-- `npm start` - Alias for `npm run server`
-- `npm run dev` - Alias for `npm run server:dev`
+## License and credits
 
-## Project Structure
-
-```
-claude-bside/
-├── server/              # Backend (Node.js + Express)
-│   ├── index.js         # Main server + WebSocket
-│   ├── agent.js         # Music generation agent (queue operations)
-│   ├── queueProcessor.js # Rhythm-aware REPL update loop
-│   ├── claude.js        # Claude API integration
-│   └── memory.js        # Style memory system
-├── public/              # Frontend (served by Vite)
-│   ├── src/
-│   │   ├── main.js      # Client entry point
-│   │   └── audioManager.js  # Strudel audio manager
-│   ├── index.html       # Landing page + main UI
-│   └── style.css        # Styling
-├── vite.config.js       # Vite configuration
-└── package.json
-```
-
-## API Endpoints
-
-- `POST /api/agent/start` - Manually start the agent (auto-starts on boot)
-- `POST /api/agent/stop` - Stop the agent
-- `GET /api/queue` - Get queue status (current pattern, queued patterns, BPM)
-- `GET /api/style/summary` - Get current style preferences
-- `GET /api/style/export` - Export style profile as JSON
-- `POST /api/pattern` - Manually update pattern (for testing)
-- `GET /api/health` - Health check
-
-## Configuration
-
-### Agent Settings
-
-Edit `server/agent.js` to adjust:
-- `GENERATION_INTERVAL` - Queue check interval (default: 20 seconds)
-- `MIN_QUEUE_LENGTH` - Minimum patterns in queue (default: 3)
-- `TARGET_QUEUE_LENGTH` - Target queue length (default: 5)
-- `MAJOR_CHANGE_FEEDBACK_THRESHOLD` - Feedback for queue regeneration (default: 2)
-
-### Tempo Settings
-
-Edit `server/index.js` to adjust:
-- `bpm` - Beats per minute (default: 120)
-- `beatsPerBar` - Time signature (default: 4)
-
-### Audio & Timing
-
-**Web Audio**: Requires one user interaction before audio can play (browser security). After "Start Listening", patterns auto-play.
-
-**Musical Timing**: Pattern transitions happen on bar boundaries for smooth, musical flow:
-- Duration = `bars × beatsPerBar × (60000 / BPM)` milliseconds
-- Example: 8 bars at 120 BPM = 16 seconds
-- Queue processor checks on every bar (every 2 seconds at 120 BPM)
-
-## Deployment
-
-### Production Build
-
-```bash
-npm run client:build  # Builds to ./dist
-```
-
-Then serve `dist/` directory and run the backend server.
-
-## Troubleshooting
-
-**No audio playing?**
-- Make sure you clicked "Start Listening" on the landing page
-- Check browser console for errors
-- Verify `ANTHROPIC_API_KEY` is set
-
-**Patterns not generating?**
-- Check backend logs for API errors
-- Verify agent is running (check `/api/health`)
-- Ensure API key is valid
-
-**WebSocket not connecting?**
-- Make sure backend is running on port 3000
-- Check Vite proxy config in `vite.config.js`
-- Look for CORS errors in console
-
-## License
-
-AGPL-3.0-or-later (required by Strudel dependency)
-
-## Credits
-
-- Built with [Strudel](https://strudel.cc) by Felix Roos and contributors
-- Powered by [Claude](https://anthropic.com/claude) by Anthropic
-- Inspired by the live coding and algorave communities
+AGPL-3.0-or-later, as Strudel is; a hosted room must offer its source (the room links to it).
+Built on [Strudel](https://strudel.cc) by Felix Roos and contributors. Sounds come from the
+TidalCycles Dirt-Samples, tidal-drum-machines, the Versilian Community Sample Library (CC0), the
+Salamander piano, the mridangam set, switchangel's breaks and pads, clean-breaks, AKWF wavetables and
+General MIDI soundfonts — see [`palette/README.md`](palette/README.md) for sources, pinned commits and
+attribution.
