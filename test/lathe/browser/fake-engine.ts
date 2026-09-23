@@ -278,6 +278,12 @@ export class FakeEngine implements Engine {
   preloadProgress(): { loaded: number; total: number } {
     return { loaded: 0, total: 0 };
   }
+  knobValues(): Record<string, number> {
+    return {};
+  }
+  levelAt(): number {
+    return 0;
+  }
   setVolume(): void {}
   setLocalMute(): void {}
   telemetry(): ReturnType<Engine['telemetry']> {

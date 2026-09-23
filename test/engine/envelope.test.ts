@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { channelFiltersAt, channelGainAt, instanceFiltersAt, instanceGainAt, OPEN_HIGHPASS_HZ, OPEN_LOWPASS_HZ } from '../../src/client/engine/envelope.ts';
+import {
+  channelFiltersAt,
+  channelGainAt,
+  instanceFiltersAt,
+  instanceGainAt,
+  instanceKnobsAt,
+  instanceLevelAt,
+  OPEN_HIGHPASS_HZ,
+  OPEN_LOWPASS_HZ,
+} from '../../src/client/engine/envelope.ts';
 import { buildScore } from '../../src/client/engine/score.ts';
 import { EMPTY_MIXER, type MixerState } from '../../src/shared/program.ts';
 import { part, section, sectionA, sectionB } from './fixtures.ts';
@@ -75,5 +84,24 @@ describe('filter transitions', () => {
     expect(instanceFiltersAt(s.byKey.get('b:y')!, 16).highpass).toBeCloseTo(2500);
     expect(instanceFiltersAt(s.byKey.get('b:y')!, 18).highpass).toBeCloseTo(OPEN_HIGHPASS_HZ);
     expect(channelFiltersAt(s.byOrbit.get(2)!, 30)).toEqual({ lowpass: OPEN_LOWPASS_HZ, highpass: OPEN_HIGHPASS_HZ });
+  });
+});
+
+describe('what an instance plays with (Engine.levelAt / knobValues)', () => {
+  it('reads the fader from the level lane at the score bar, before transitions and macros', () => {
+    expect(instanceLevelAt(inst('fx01-0001:pad'), 2)).toBeCloseTo(0.25);
+    expect(instanceLevelAt(inst('fx01-0001:pad'), 12)).toBeCloseTo(0.5);
+    // Mid-crossfade the channel is at cos(π/4) of the fader; the fader itself is unchanged.
+    expect(instanceLevelAt(inst('fx01-0001:hats'), 17)).toBeCloseTo(0.6);
+    expect(instanceLevelAt(inst('fx01-0002:hats'), 17)).toBeCloseTo(0.6);
+  });
+
+  it('reads knob lanes, carried values and the follow offset from the room', () => {
+    expect(instanceKnobsAt(inst('fx01-0001:bass'), 4, EMPTY_MIXER)).toEqual({ cut: 800 });
+    expect(instanceKnobsAt(inst('fx01-0001:bass'), 12, EMPTY_MIXER).cut).toBeCloseTo(Math.sqrt(400 * 1200));
+    expect(instanceKnobsAt(inst('fx01-0002:bass'), 20, EMPTY_MIXER).cut).toBeCloseTo(1200);
+    const brighter: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0.5, intensity: 0 }, trimsDb: {} }, safety: null };
+    expect(instanceKnobsAt(inst('fx01-0002:bass'), 20, brighter).cut).toBeCloseTo(1200 + 0.5 * 1050);
+    expect(instanceKnobsAt(inst('fx01-0002:kick'), 20, brighter)).toEqual({});
   });
 });

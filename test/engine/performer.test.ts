@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { Performer, type PlannedHap } from '../../src/client/engine/performer.ts';
 import { buildScore } from '../../src/client/engine/score.ts';
 import type { PartError } from '../../src/client/engine/types.ts';
+import { MAX_PART_ONSETS_PLAYED_PER_BAR } from '../../src/shared/limits.ts';
+import type { Automation, Knob } from '../../src/shared/plan.ts';
 import { EMPTY_MIXER, type MixerState } from '../../src/shared/program.ts';
 import { part, section, sectionA, sectionB } from './fixtures.ts';
 
@@ -39,6 +41,28 @@ describe('performer on the fixture', () => {
     expect(bass.map((h) => h.value.note)).toEqual(['D2', 'G2', 'B2', 'F2', 'D2', 'G2', 'B2', 'F2']);
   });
 
+  it('anchors fresh parts at their section start and keeps the origin of continuing ones', () => {
+    for (const s of [sectionA, sectionB]) {
+      for (const p of s.parts) {
+        const before = s === sectionB ? sectionA.parts.find((q) => q.id === p.id) : undefined;
+        expect([p.id, p.originCycle]).toEqual([p.id, p.continues ? before!.originCycle : s.startCycle]);
+      }
+    }
+  });
+
+  it('plays a fresh part from its origin: P(cycle − originCycle)', () => {
+    const code = 'note("<c3 d3 e3 f3 g3>")';
+    const s = section({ id: 's', startCycle: 21, parts: [part({ id: 'p', code, originCycle: 21 })] });
+    const { performer, score } = setup([s]);
+    expect(play(performer, score, 21, 26).map((h) => [h.onset, h.value.note])).toEqual([
+      [21, 'c3'],
+      [22, 'd3'],
+      [23, 'e3'],
+      [24, 'f3'],
+      [25, 'g3'],
+    ]);
+  });
+
   it('picks a continuing part up where the previous instance left off after a vamp', () => {
     // A (16 bars) vamps two extra bars; the conductor anchors B's part where A's pattern is (score bar 10).
     const code = 'note("<c3 d3 e3 f3 g3>")';
@@ -67,6 +91,16 @@ describe('performer on the fixture', () => {
     expect(cutoff(15)).toBeCloseTo(400 * 3 ** (7 / 8));
     expect(cutoff(16)).toBeCloseTo(1200);
     expect(cutoff(17)).toBeCloseTo(1200);
+  });
+
+  it('samples a knob in the time frame where knob() is applied: a later .slow(2) stretches its lane', () => {
+    const knobs: Knob[] = [{ name: 'cut', default: 100, min: 100, max: 2000, follows: 'none' }];
+    const automation: Automation[] = [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 100, to: 1700, curve: 'linear' }];
+    const s = section({ id: 's', startCycle: 16, parts: [part({ id: 'p', code: 'note("c3").lpf(knob("cut")).slow(2)', originCycle: 16, knobs, automation })] });
+    const { performer, score } = setup([s]);
+    const cutoff = play(performer, score, 16, 32).map((h) => [h.onset - 16, h.value.cutoff]);
+    // Score bar b sounds the lane's value at bar b / 2.
+    expect(cutoff).toEqual([0, 2, 4, 6, 8, 10, 12, 14].map((b) => [b, 100 + 100 * (b / 2)]));
   });
 
   it('follows the brightness macro (knob follow + per-hap cutoff scaling)', () => {
@@ -169,6 +203,22 @@ describe('guard', () => {
     expect(performer.isMuted('s:b')).toBe(true);
     expect(haps.filter((h) => h.inst.part.id === 'b').length).toBeLessThanOrEqual(128);
     expect(onsets(haps, 'k')).toEqual([0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75]);
+  });
+
+  it('mutes at the same onset of the same bar whatever the scheduler tick (per-bar backstop)', () => {
+    const bomb = 's("white*16").fast(16).superimpose(x => x.late(0.001)).superimpose(x => x.late(0.002))';
+    const run = (tick: number) => {
+      const s = section({ id: 's', startCycle: 0, parts: [part({ id: 'b', role: 'texture', code: bomb })] });
+      const { performer, score, errors } = setup([s]);
+      const haps = play(performer, score, 0, 2, tick);
+      return { count: haps.length, last: haps[haps.length - 1]!.onset, errors };
+    };
+    const fine = run(0.01);
+    const coarse = run(0.03);
+    expect(fine.count).toBe(MAX_PART_ONSETS_PLAYED_PER_BAR);
+    expect(coarse.count).toBe(MAX_PART_ONSETS_PLAYED_PER_BAR);
+    expect(coarse.last).toBe(fine.last);
+    expect(fine.errors).toEqual([expect.objectContaining({ code: 'density', message: coarse.errors[0]!.message })]);
   });
 
   it('mutes a part with too many haps in one tick', () => {

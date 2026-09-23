@@ -6,7 +6,7 @@ import * as core from '@strudel/core';
 import type { Knob } from '../../shared/plan.ts';
 import type { MixerState } from '../../shared/program.ts';
 import { ROLE_FAMILY, type PartRole } from '../../shared/music.ts';
-import { MAX_HAPS_PER_TICK, MAX_PART_HAPS_PER_TICK, MAX_PART_ONSETS_PER_BAR, sanitizeModelValue } from '../../shared/limits.ts';
+import { MAX_HAPS_PER_TICK, MAX_PART_HAPS_PER_TICK, MAX_PART_ONSETS_PLAYED_PER_BAR, sanitizeModelValue } from '../../shared/limits.ts';
 import { scoreBarAt, vampLoopBars } from '../../shared/schedule.ts';
 import type { TelemetryErrorCode } from '../../shared/protocol.ts';
 import { compilePart } from '../../strudel/compile.ts';
@@ -28,8 +28,6 @@ export interface PlannedHap {
 
 /** Query time budget per part (EMA of ms per tick) before it is muted. */
 export const PART_QUERY_BUDGET_MS = 4;
-/** Deterministic backstop: onsets of one part within one bar (the server allows 64). */
-export const MAX_PART_ONSETS_PLAYED_PER_BAR = 2 * MAX_PART_ONSETS_PER_BAR;
 /** Kept first when a tick overflows; dropped from the end. */
 export const ROLE_PRIORITY: readonly PartRole[] = ['kick', 'bass', 'snare', 'breaks', 'hats', 'lead', 'vox', 'chords', 'arp', 'perc', 'pad', 'texture'];
 const EMA_ALPHA = 0.1;

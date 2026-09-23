@@ -4,6 +4,7 @@
   import type { PartError } from '../engine/types.ts';
   import type { Room } from '../room/types.ts';
   import { provideRoom, type Layout } from './context.ts';
+  import { mediaQuery } from './media.ts';
   import { startPulse } from './pulse.ts';
   import type { Settings } from './settings.ts';
   import { nowPlaying } from './now.ts';
@@ -31,17 +32,10 @@
   const bar = pulse.bar;
   const { schedule, crowd, connection } = stores;
 
-  const media = (query: string) =>
-    readable(matchMedia(query).matches, (set) => {
-      const m = matchMedia(query);
-      const on = () => set(m.matches);
-      m.addEventListener('change', on);
-      return () => m.removeEventListener('change', on);
-    });
-  const wide = media('(min-width: 1200px)');
-  const mid = media('(min-width: 820px)');
+  const wide = mediaQuery('(min-width: 1200px)');
+  const mid = mediaQuery('(min-width: 820px)');
   const layout = derived([wide, mid], ([w, m]): Layout => (w ? 'desktop' : m ? 'tablet' : 'phone'));
-  const reduced = media('(prefers-reduced-motion: reduce)');
+  const reduced = mediaQuery('(prefers-reduced-motion: reduce)');
   // svelte-ignore state_referenced_locally
   const calm = derived([settings, reduced], ([s, r]) => s.calm ?? r);
   const engineState = readable(engine.state, (set) => engine.on('state', set));

@@ -22,6 +22,8 @@ test.describe('the live room (server)', () => {
     await expect(app(page)).toHaveAttribute('data-connection', 'live', { timeout: 20_000 });
     await expect(page.getByText(/Now cutting:/)).toContainText(/Side [A-Z]+, Track \d+/);
     await expect(page.locator('.record canvas.live')).toBeVisible({ timeout: 20_000 });
+    // The server runs the scripted composer: the label credits the autopilot, not Claude.
+    await expect(page.locator('.record .label-by')).toHaveText('Autopilot · live');
     expect(frames.some((f) => f.startsWith('42["hello"'))).toBe(true);
     expect(frames.some((f) => /^4\d+\["clock"\]/.test(f))).toBe(true);
   });

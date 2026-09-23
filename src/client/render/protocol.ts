@@ -28,10 +28,25 @@ export interface SideSection {
   provisional: boolean;
 }
 
+/** The listener's display preferences the renderer honours. */
+export interface RenderPrefs {
+  /** `prefers-contrast: more`: no sheen (docs/DESIGN.md). */
+  contrastMore: boolean;
+}
+
+/** What the DOM label over the record shows (it lives outside the canvas). */
+export interface LabelState {
+  /** Clay-on-ink for the bar after a drop. */
+  inverted: boolean;
+  /** Nothing is sounding: the label reads "— listening —". */
+  listening: boolean;
+}
+
 export type ToRenderer =
-  | { type: 'init'; canvas: OffscreenCanvas | HTMLCanvasElement; width: number; height: number; dpr: number; tier: RenderTier }
+  | { type: 'init'; canvas: OffscreenCanvas | HTMLCanvasElement; width: number; height: number; dpr: number; tier: RenderTier; contrastMore: boolean }
   | { type: 'resize'; width: number; height: number; dpr: number }
   | { type: 'tier'; tier: RenderTier }
+  | { type: 'prefs'; contrastMore: boolean }
   | { type: 'pause'; paused: boolean }
   | { type: 'clock'; sample: ClockSample }
   /** Triggered events (as they are scheduled) — imprinted into the groove when their onset passes. */
@@ -54,19 +69,29 @@ export type FromRenderer =
 /**
  * Created by the Record component. The host subscribes to the engine itself (hap, sectionStart,
  * meters, lookahead queries ≤ 4 per bar) and derives `moment`s from section roles; the UI supplies
- * side, crowd, etches and the user's tier choice.
+ * side, crowd, etches, the user's tier choice and the display preferences (media queries).
  */
 export interface LatheHost {
   resize(width: number, height: number, dpr: number): void;
   setTier(tier: RenderTier): void;
+  setPrefs(prefs: RenderPrefs): void;
   pause(paused: boolean): void;
   setSide(movement: MovementInfo | null, sections: SideSection[]): void;
   setCrowd(pull: PadPoint, needle: PadPoint): void;
   etch(etches: { type: EtchType; cycle: number; hue: number }[]): void;
   on(event: 'stats', listener: (s: { p95FrameMs: number; fps: number }) => void): () => void;
+  /** The DOM label over the record: the listener is called at once with the current state, then on every change. */
+  on(event: 'label', listener: (s: LabelState) => void): () => void;
   destroy(): void;
 }
 
+export interface LatheOptions {
+  tier: RenderTier;
+  useWorker: boolean;
+  /** Initial preferences (default: none set); later changes go through setPrefs. */
+  prefs?: RenderPrefs;
+}
+
 // Factory (implemented in host.ts):
-//   createLathe(canvas: HTMLCanvasElement, engine: Engine, options: { tier: RenderTier; useWorker: boolean }): LatheHost
-export type CreateLathe = (canvas: HTMLCanvasElement, engine: Engine, options: { tier: RenderTier; useWorker: boolean }) => LatheHost;
+//   createLathe(canvas: HTMLCanvasElement, engine: Engine, options: LatheOptions): LatheHost
+export type CreateLathe = (canvas: HTMLCanvasElement, engine: Engine, options: LatheOptions) => LatheHost;
