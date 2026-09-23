@@ -546,33 +546,38 @@ src/
   shared/            contracts used everywhere (no DOM, no Node APIs)
     music.ts timeline.ts schedule.ts limits.ts text.ts plan.ts program.ts protocol.ts analysis.ts
     composer-api.ts catalog.ts
-  strudel/           isomorphic Strudel toolkit (browser + Node worker)             [agent: strudel]
-    allowlist.generated.json  (+ scripts/gen-allowlist.ts)
+  strudel/           isomorphic Strudel toolkit (browser + Node worker)
+    allowlist.generated.json  (+ scripts/gen-allowlist.ts), allowlist.ts
     validate.ts      AST allowlist validator (the security boundary)
     compile.ts       validated code → Pattern (scope as parameters, knob binding, locations)
     analyze.ts       hap-level descriptors, key fit, limits, density, fingerprint
+    features.ts density.ts scales.ts query.ts mini.ts suggest.ts ("did you mean")
     catalog.ts       parseCatalog, createSoundIndex (pure)
   server/
-    main.ts config.ts log.ts                                                        [agent: room]
+    main.ts config.ts log.ts types.ts
     node-hooks.ts    Strudel resolve hook for Node (+ registerStrudelHooks for workers)
-    room/            clock.ts, crowd.ts, identity.ts, socket.ts                     [agent: room]
-    http/            api.ts (health, composer routes, SSE), security.ts (CSP, admin guard)  [agent: room]
-    check/           checker.ts (worker pool), worker.ts                           [agent: strudel]
-    conductor/       conductor.ts, accept.ts, arc.ts, ledger.ts, compile.ts, mixer.ts, context.ts
-                     (buildTurnContext), store.ts                                   [agent: conductor]
-    composer/        claude.ts, external.ts, scripted.ts, reference.ts, library/   [agent: composer]
+    room/            clock.ts, crowd.ts (+ aggregate, buckets, requests, telemetry, params),
+                     identity.ts, socket.ts
+    http/            app.ts, api.ts (health, composer routes, SSE), security.ts (CSP, admin guard)
+    check/           checker.ts (worker pool), worker.ts, run.ts, vm-evaluator.ts, audition.ts
+    conductor/       conductor.ts, accept.ts, compile.ts, context.ts (buildTurnContext), placement.ts,
+                     keep.ts (Stay / Move on), arc.ts, mixer.ts, knobs.ts, ledger.ts, store.ts
+    composer/        claude.ts, external.ts, scripted.ts (+ autopilot, arrange, carry, wishes),
+                     reference.ts, prompt/ (brief, reference card, catalog digest), library/
   client/
-    index.html main.ts                                                              [agent: ui]
-    engine/          engine.ts, boot.ts, sounds.ts, preload.ts, scheduler.ts, clock-sync.ts,
-                     performer.ts, channels.ts, master.ts, riser.ts                 [agent: engine]
-    render/          protocol.ts, lathe.ts, worker.ts, host.ts                      [agent: lathe]
-    room/            connection.ts (socket, hello/welcome, stores)                  [agent: ui]
-    ui/              App.svelte + components, stores.ts, tokens.css                 [agent: ui]
-  cli/bside.ts       the external composer CLI                                      [agent: composer]
-palette/             vendored maps + catalog.json (generated)                       [agent: palette]
+    index.html main.ts
+    engine/          engine.ts, boot.ts, sounds.ts, preload.ts, fetch.ts, scheduler.ts, timers.ts,
+                     clock-sync.ts, performer.ts, score.ts, window.ts, envelope.ts, knobs.ts,
+                     channels.ts, master.ts, riser.ts, meters.ts
+    render/          protocol.ts, host.ts, worker.ts, renderer.ts, lathe.ts (+ geometry, surface,
+                     sprites, feed, moments, flash, tiers, clock, tokens)
+    room/            connection.ts (socket, hello/welcome, stores), mock.ts (?mock), identity.ts
+    ui/              App.svelte, ListeningRoom.svelte, components/, stores.ts, tokens.css
+  cli/               bside.ts (+ args, client, format): the external composer CLI
+palette/             vendored maps, levels.json, catalog.json (generated)
 scripts/             build-catalog.ts, render-audio.ts, gen-allowlist.ts
-test/                vitest unit + integration (test/integration: agent room); test/fixtures
-e2e/                 Playwright tests (scripted driver, no API key needed)          [agent: ui]
+test/                vitest unit + integration, per module; test/fixtures; browser harnesses
+e2e/                 Playwright tests (scripted driver, no API key needed)
 legacy/              the proof of concept, for reference
 ```
 
