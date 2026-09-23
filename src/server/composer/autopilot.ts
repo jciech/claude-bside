@@ -1,21 +1,23 @@
 // The autopilot's planning: pure functions of the validated library and a TurnContext.
-//  - After someone else's material (a handoff), carry-vamp it for a few sections.
+//  - After someone else's material (a handoff), carry-vamp it for a few sections, then join it with
+//    an ensemble of its own, or open its own side when that one's time is up.
 //  - Continue its own ensemble through the movement's form, following the conductor's expected
 //    roles, each role arranged differently each time it comes back, the bridge in another mode.
 //  - Close its side with an outro after 8–9 minutes of music (never before the movement is old
 //    enough to be replaced, 6 minutes at the commit that opens the next one), then open a new side
-//    with a contrasting ensemble: another groove family, not one heard recently, a legal tempo move
+//    with a contrasting ensemble: the next on a tour through the library (another groove family, not
+//    one heard recently) or, as the room leans, one of the next few by mood; a legal tempo move
 //    (≤ 12 BPM with a ramp, exact half or double time, or through a beatless intro), a related key.
 import { createHash } from 'node:crypto';
 import type { SectionSummary, TurnContext } from '../../shared/composer-api.ts';
-import { PERCUSSIVE_ROLES, type SectionRole } from '../../shared/music.ts';
+import { BPM_MAX, BPM_MIN, PERCUSSIVE_ROLES, type SectionRole } from '../../shared/music.ts';
 import type { FormStep, MovementPlan, Plan, SectionPlan } from '../../shared/plan.ts';
 import { arrangeSection, barsFor, riserCode, secondsFor, type PrevView } from './arrange.ts';
 import { carryPlan, carryRun, isCarryName, MAX_CARRY_RUN } from './carry.ts';
 import type { Ensemble } from './library/index.ts';
 import { fillScale, parseScale, scaleOf, transposeTonic } from './library/scale.ts';
 import { colourMoves, partVariants, type Variant } from './variants.ts';
-import { decideWishes, promisedEnsembles, readWishes, type Wish } from './wishes.ts';
+import { askedLean, decideWishes, follows, readPromises, readWishes, type Mood, type Promised, type Wish } from './wishes.ts';
 
 export interface AutopilotLibrary {
   ensembles: readonly Ensemble[];
@@ -81,6 +83,8 @@ const MOVEMENT_MAX_SEC = 9 * 60;
 const SIDE_SECONDS: [number, number] = [8 * 60, 8.75 * 60];
 /** How far ahead the conductor asks for music (its horizon trigger), so when the next plan comes. */
 const PLAN_AHEAD_SEC = 120;
+/** Sections an ensemble that joins someone else's side gets to play before the side closes. */
+const JOIN_SECTIONS = 2;
 
 export function seedOf(ctx: TurnContext): number {
   return createHash('sha1').update(`${ctx.request.id}|${ctx.request.startCycle}`).digest().readUInt32BE(0);
@@ -88,12 +92,25 @@ export function seedOf(ctx: TurnContext): number {
 
 const hashOf = (text: string) => createHash('sha1').update(text).digest().readUInt32BE(0);
 const hasBeat = (ens: Ensemble) => ens.parts.some((p) => PERCUSSIVE_ROLES.has(p.role));
-const clampBpm = (ens: Ensemble, bpm: number) => Math.min(ens.bpm.max, Math.max(ens.bpm.min, Math.round(bpm)));
+/** The tempi an ensemble may play at: its own range, inside the room's (the plan schema's). */
+const tempoRange = (ens: Ensemble) => ({ min: Math.max(ens.bpm.min, BPM_MIN), max: Math.min(ens.bpm.max, BPM_MAX) });
+const inRange = (ens: Ensemble, bpm: number) => bpm >= tempoRange(ens).min && bpm <= tempoRange(ens).max;
+const clampBpm = (ens: Ensemble, bpm: number) => Math.min(tempoRange(ens).max, Math.max(tempoRange(ens).min, Math.round(bpm)));
 const rampFor = (to: number, from: number) => (Math.abs(to - from) > TEMPO_SWITCH_BPM ? Math.ceil(Math.abs(to - from)) : 0);
 
-/** Every code a part may play in a scale: its template and each variant. */
+const codesCache = new WeakMap<Ensemble, Map<string, Map<string, Set<string>>>>();
+
+/** Every code a part may play in a scale: its template and each variant (recognising a tail asks for every ensemble's). */
 function codesOf(ens: Ensemble, scale: string): Map<string, Set<string>> {
-  return new Map(ens.parts.map((p) => [p.id, new Set(partVariants(p).map((v) => fillScale(v.code, scale)))]));
+  let byScale = codesCache.get(ens);
+  if (!byScale) codesCache.set(ens, (byScale = new Map()));
+  let codes = byScale.get(scale);
+  if (!codes) {
+    if (byScale.size >= 64) byScale.clear();
+    codes = new Map(ens.parts.map((p) => [p.id, new Set(partVariants(p).map((v) => fillScale(v.code, scale)))]));
+    byScale.set(scale, codes);
+  }
+  return codes;
 }
 
 /** The ensemble that wrote every part of `section` (in its scale, plus a build's riser), if the autopilot did. */
@@ -207,8 +224,11 @@ function shouldClose(clock: SideClock, at: number, role: SectionRole): boolean {
   return next + outro > clock.target || next + outro > MOVEMENT_MAX_SEC;
 }
 
-/** Section roles to write next: the conductor's expected roles, kept sensible and timed to the side. */
-function rolesFor(ctx: TurnContext, count: number, after: SectionRole, clock: SideClock): SectionRole[] {
+/**
+ * Section roles to write next: the conductor's expected roles, kept sensible and timed to the side.
+ * Without `mayEnd` (an ensemble that only joined the side) a side road stands where the outro would.
+ */
+function rolesFor(ctx: TurnContext, count: number, after: SectionRole, clock: SideClock, mayEnd: boolean): SectionRole[] {
   const out: SectionRole[] = [];
   let prev = after;
   let at = clock.start;
@@ -220,7 +240,7 @@ function rolesFor(ctx: TurnContext, count: number, after: SectionRole, clock: Si
     if (prev !== 'build') {
       // A build only starts if its drop still fits before the outro.
       const late = shouldClose(clock, at, role) || (role === 'build' && shouldClose(clock, at + secondsFor('build', clock.bpm), 'drop'));
-      if ((role === 'outro' || late) && mayClose(clock, at)) role = 'outro';
+      if ((role === 'outro' || late) && mayEnd && mayClose(clock, at)) role = 'outro';
       // Too early to close but no room for a long section: a short side road before the outro.
       else if (late) role = prev === 'bridge' ? 'interlude' : 'bridge';
       else if (role === 'outro') role = prev === 'groove' ? 'breakdown' : 'groove';
@@ -267,11 +287,22 @@ interface Choice {
   beatless: boolean;
 }
 
-/** Exact half or double time, as the conductor's tempo rules accept it (within 3 %). */
-function halfOrDouble(ens: Ensemble, tailBpm: number): number | null {
+/** `bpm` is `ratio` times `from`, as the conductor's tempo rules accept half or double time (within 3 %). */
+const isMultiple = (bpm: number, from: number, ratio: number) => Math.abs(bpm / from - ratio) <= 0.03 * ratio;
+
+/**
+ * Exact half or double time in the ensemble's range, as close to the tempo playing as allowed. The
+ * conductor checks it twice: the switch against the section playing (`tailBpm`), and the new
+ * movement's move against the old movement's centre, which a tail may sit up to 4 BPM away from.
+ */
+function halfOrDouble(ens: Ensemble, tailBpm: number, movementBpm: number): number | null {
   for (const ratio of [2, 0.5]) {
-    const bpm = Math.round(tailBpm * ratio);
-    if (bpm >= ens.bpm.min && bpm <= ens.bpm.max && Math.abs(bpm / tailBpm - ratio) <= 0.03 * ratio) return bpm;
+    const around = Math.round(tailBpm * ratio);
+    const fits = (bpm: number) => inRange(ens, bpm) && isMultiple(bpm, tailBpm, ratio) && isMultiple(bpm, movementBpm, ratio);
+    for (let d = 0; d <= Math.ceil(0.03 * ratio * tailBpm); d++) {
+      if (fits(around - d)) return around - d;
+      if (fits(around + d)) return around + d;
+    }
   }
   return null;
 }
@@ -282,13 +313,13 @@ function halfOrDouble(ens: Ensemble, tailBpm: number): number | null {
  * Ramps are measured from the section actually playing before (`tailBpm`).
  */
 function tempoFor(ens: Ensemble, movementBpm: number | null, tailBpm: number | null): Omit<Choice, 'ensemble'> {
-  if (movementBpm === null || tailBpm === null) return { bpm: ens.bpm.default, rampBars: 0, beatless: false };
-  const own = ens.bpm.default;
+  const own = clampBpm(ens, ens.bpm.default);
+  if (movementBpm === null || tailBpm === null) return { bpm: own, rampBars: 0, beatless: false };
   if (Math.abs(own - movementBpm) <= MAX_MOVEMENT_JUMP_BPM) return { bpm: own, rampBars: rampFor(own, tailBpm), beatless: false };
-  const multiple = halfOrDouble(ens, tailBpm);
+  const multiple = halfOrDouble(ens, tailBpm, movementBpm);
   if (multiple !== null) return { bpm: multiple, rampBars: 0, beatless: false };
   const reach = Math.round(movementBpm + Math.sign(own - movementBpm) * MAX_MOVEMENT_JUMP_BPM);
-  if (reach >= ens.bpm.min && reach <= ens.bpm.max) return { bpm: reach, rampBars: rampFor(reach, tailBpm), beatless: false };
+  if (inRange(ens, reach)) return { bpm: reach, rampBars: rampFor(reach, tailBpm), beatless: false };
   return { bpm: own, rampBars: 0, beatless: true };
 }
 
@@ -299,19 +330,44 @@ function staleness(lib: AutopilotLibrary, ens: Ensemble, ctx: TurnContext): numb
   return recent.filter((s) => mine.has(s)).length / recent.length;
 }
 
+const MIDDLE: Mood = { intensity: 0.5, brightness: 0.5 };
+
+const AXES = ['intensity', 'brightness'] as const;
+
+/**
+ * How the room steers the next side: `from` is where the music is (the side that ends, or its
+ * movement's baseline), `asked` the lean listeners asked for in words, and `strength` how clearly the
+ * room leans on each axis (0..1), by the pad away from the middle (when someone is listening) or by
+ * those words.
+ */
+interface Steer {
+  from: Mood;
+  asked: Mood;
+  strength: Mood;
+}
+
+function steerOf(ctx: TurnContext, from: Mood, asked: Mood): Steer {
+  const { pad, listeners } = ctx.crowd;
+  const on = (axis: keyof Mood) => Math.min(1, Math.max(listeners > 0 ? 2 * Math.abs(pad[axis] - 0.5) : 0, Math.abs(asked[axis])));
+  return { from, asked, strength: { intensity: on('intensity'), brightness: on('brightness') } };
+}
+
+/** How far a side's mood moves from where the music is, on an axis listeners asked about. */
+const ASKED_STEP = 0.25;
+
 /**
  * Where the new side should sit: the room's pad when someone is listening (else the middle), pushed
- * away from the side that is ending, and leaned by what listeners asked for.
+ * away from the side that is ending; on an axis listeners asked about, a step from where the music is
+ * in the direction they asked.
  */
-function targetMood(ctx: TurnContext, wishes: readonly Wish[], current: Ensemble | null): { intensity: number; brightness: number } {
-  const base = ctx.crowd.listeners > 0 ? { intensity: ctx.crowd.pad.intensity, brightness: ctx.crowd.pad.brightness } : { intensity: 0.5, brightness: 0.5 };
+function targetMood(ctx: TurnContext, current: Ensemble | null, steer: Steer): Mood {
+  const base = ctx.crowd.listeners > 0 ? { intensity: ctx.crowd.pad.intensity, brightness: ctx.crowd.pad.brightness } : MIDDLE;
   const mood = current
     ? { intensity: base.intensity + 0.5 * (base.intensity - current.mood.intensity), brightness: base.brightness + 0.3 * (base.brightness - current.mood.brightness) }
     : { ...base };
-  const weight = wishes.reduce((a, w) => a + w.support, 0);
-  if (weight > 0) {
-    mood.intensity += (0.15 * wishes.reduce((a, w) => a + w.lean.intensity * w.support, 0)) / weight;
-    mood.brightness += (0.15 * wishes.reduce((a, w) => a + w.lean.brightness * w.support, 0)) / weight;
+  for (const axis of AXES) {
+    const asked = steer.asked[axis];
+    if (asked !== 0) mood[axis] += (steer.from[axis] + Math.sign(asked) * ASKED_STEP - mood[axis]) * Math.min(1, Math.abs(asked));
   }
   return mood;
 }
@@ -319,6 +375,14 @@ function targetMood(ctx: TurnContext, wishes: readonly Wish[], current: Ensemble
 const RECENCY_PENALTY = [3, 1.5, 0.8, 0.4];
 /** Cost of each ensemble skipped on the tour. */
 const TOUR_STEP = 0.5;
+/**
+ * The tour is a default, not a veto: when the room leans all the way, the next side may be any of the
+ * tour's next six ensembles (skipping one inside that window costs `WINDOW_STEP`), chosen by mood.
+ */
+const TOUR_WINDOW = 5;
+const WINDOW_STEP = 0.1;
+/** A lean this clear on an axis (the pad at 0.35 or 0.65, or words) wants the next side to move that way. */
+const CLEAR_LEAN = 0.3;
 
 /**
  * The order new sides take through the library, so every ensemble gets a side before any comes
@@ -340,32 +404,46 @@ function tourOf(ensembles: readonly Ensemble[]): Ensemble[] {
   return out;
 }
 
-function chooseEnsembles(lib: AutopilotLibrary, ctx: TurnContext, tail: SectionSummary | null, avoid: Ensemble | null, wishes: readonly Wish[], seed: number): Choice[] {
+interface Asks {
+  wishes: readonly Wish[];
+  promised: Promised;
+  steer: Steer;
+}
+
+function chooseEnsembles(lib: AutopilotLibrary, ctx: TurnContext, tail: SectionSummary | null, avoid: Ensemble | null, asks: Asks, seed: number): Choice[] {
   const movementBpm = ctx.movement?.bpm ?? tail?.bpm ?? null;
   const recent = recentEnsembles(lib, ctx);
   const current = avoid ?? recent[0] ?? null;
-  const mood = targetMood(ctx, wishes, current);
+  const { steer } = asks;
+  const mood = targetMood(ctx, current, steer);
   const groove = ctx.movement?.groove ?? current?.groove ?? null;
-  const promised = new Set(promisedEnsembles(ctx.crowd.promises, lib.ensembles).map((p) => p.ensemble.id));
+  const promised = new Set(asks.promised.ensembles.map((p) => p.ensemble.id));
   const tour = tourOf(lib.ensembles);
   const here = current ? tour.indexOf(current) : -1;
-  // Nobody at the pad: the mood target is only a nudge away from the side that ends.
-  const moodWeight = ctx.crowd.listeners > 0 ? 1 : 0.5;
+  const strength = Math.max(steer.strength.intensity, steer.strength.brightness);
+  const reach = Math.round(strength * TOUR_WINDOW);
+  // Nobody at the pad: the mood target is only a nudge away from the side that ends, unless asked.
+  const moodWeight = (ctx.crowd.listeners > 0 ? 1 : 0.5) + 2 * strength;
+  // Where the room clearly leans, the next side moves from where the music is toward the target.
+  const lean = { intensity: 0, brightness: 0 };
+  for (const axis of AXES) if (steer.strength[axis] >= CLEAR_LEAN) lean[axis] = mood[axis] - steer.from[axis];
   return lib.ensembles
     .map((ens) => {
       const tempo = tempoFor(ens, movementBpm, tail?.bpm ?? null);
-      const wished = wishes.filter((w) => w.ensemble?.id === ens.id).reduce((a, w) => a + w.support, 0);
+      const wished = asks.wishes.filter((w) => w.ensemble?.id === ens.id).reduce((a, w) => a + w.support, 0);
       const jitter = (createHash('sha1').update(`${seed}:${ens.id}`).digest().readUInt16BE(0) / 65536) * 0.3;
       const heard = ens.id === avoid?.id ? 0 : recent.findIndex((e) => e.id === ens.id);
       const ahead = here < 0 ? 0 : (tour.indexOf(ens) - here - 1 + tour.length) % tour.length;
       const score =
         -moodWeight * (Math.abs(ens.mood.intensity - mood.intensity) + Math.abs(ens.mood.brightness - mood.brightness)) -
-        TOUR_STEP * ahead -
+        WINDOW_STEP * Math.min(ahead, reach) -
+        TOUR_STEP * Math.max(0, ahead - reach) -
         0.8 * staleness(lib, ens, ctx) -
         (tempo.beatless ? 0.3 : 0) -
         (heard >= 0 ? (RECENCY_PENALTY[heard] ?? 0) : 0) -
         (groove !== null && ens.groove === groove ? 1 : 0) -
         (ens.standby ? 1 : 0) +
+        (follows(lean, steer.from, ens.mood) ? 2 * strength : 0) +
         Math.min(1.5, wished) +
         (promised.has(ens.id) ? 20 : 0) +
         jitter;
@@ -429,7 +507,7 @@ function continueMovement(lib: AutopilotLibrary, ctx: TurnContext, ens: Ensemble
   const home = knowsScale(ens, movement.scale) ? movement.scale : tail.scale;
   const bpm = own ? tail.bpm : clampBpm(ens, movement.bpm);
   const used = usedNames(ctx);
-  const roles = rolesFor(ctx, count, tail.role, sideClock(ctx, bpm));
+  const roles = rolesFor(ctx, count, tail.role, sideClock(ctx, bpm), own);
   const offset = hashOf(movement.name);
   const away = awayKeys(ens, home, movement.name);
   let prev: PrevView = tail;
@@ -541,14 +619,17 @@ export function planCandidates(lib: AutopilotLibrary, ctx: TurnContext, mode: Pl
   const count: 1 | 2 = mode === 'fallback' ? 1 : ctx.request.sectionsWanted;
   const tail: SectionSummary | null = ctx.committed[ctx.committed.length - 1] ?? ctx.now ?? null;
   const wishes = mode === 'compose' ? readWishes(ctx.crowd.requests, lib.ensembles) : [];
+  const promised = readPromises(ctx.crowd.promises, lib.ensembles);
+  const own = tail && ctx.movement ? recognize(lib.ensembles, tail) : null;
+  const from = own?.mood ?? ctx.movement?.baseline ?? MIDDLE;
+  const asks: Asks = { wishes, promised, steer: steerOf(ctx, from, askedLean(wishes, promised.leans)) };
   const wantsSide = mode === 'compose' && ctx.request.kind === 'movement';
-  const choices = (avoid: Ensemble | null) => chooseEnsembles(lib, ctx, tail, avoid, wishes, seed);
+  const choices = (avoid: Ensemble | null) => chooseEnsembles(lib, ctx, tail, avoid, asks, seed);
   const out: Candidate[] = [];
 
   if (!tail || !ctx.movement) {
     for (const choice of choices(null).slice(0, 3)) out.push(openMovement(lib, ctx, choice, null, count, seed));
   } else {
-    const own = recognize(lib.ensembles, tail);
     if (own) {
       const cont = continueMovement(lib, ctx, own, tail, true, count, seed);
       const closesNow = cont.plan.sections[0]!.role === 'outro' && count === 2 && ctx.movement.ageMin * 60 >= MOVEMENT_MIN_SEC;
@@ -562,9 +643,15 @@ export function planCandidates(lib: AutopilotLibrary, ctx: TurnContext, mode: Pl
       const carry: Candidate = { plan: carryPlan(tail, run, bars, count), opens: null, kind: 'carry' };
       if (run < MAX_CARRY_RUN && !wantsSide) out.push(carry);
       const ranked = choices(null);
-      // New material doesn't arrive just to wind a side down: when the arc says outro, open the next one.
+      const replaceable = ctx.movement.ageMin * 60 >= MOVEMENT_MIN_SEC;
+      // New material doesn't arrive just to wind a side down: when the arc says outro, or the side
+      // would close within the joining ensemble's first two sections and may be replaced, the next side
+      // opens instead. An ensemble that joins never writes the side's outro itself (a side road stands
+      // in until the side may be replaced).
       if (!wantsSide && ctx.expected[0]?.role !== 'outro') {
         for (const choice of ranked.filter((c) => fitsMovement(c.ensemble, ctx.movement!)).slice(0, 2)) {
+          const clock = sideClock(ctx, clampBpm(choice.ensemble, ctx.movement.bpm));
+          if (replaceable && rolesFor(ctx, JOIN_SECTIONS, tail.role, clock, true).includes('outro')) continue;
           out.push(continueMovement(lib, ctx, choice.ensemble, tail, false, count, seed));
         }
       }
@@ -573,9 +660,8 @@ export function planCandidates(lib: AutopilotLibrary, ctx: TurnContext, mode: Pl
     }
   }
   if (mode === 'fallback') return out;
-  const promised = promisedEnsembles(ctx.crowd.promises, lib.ensembles);
   return out.map((c) => {
-    const playing = c.opens && c.plan.movement ? { ensemble: c.opens, sectionIndex: c.plan.movement.startsAtSection, opensMovement: true } : null;
-    return { ...c, plan: { ...c.plan, requestDecisions: decideWishes(wishes, promised, playing).slice(0, 10) } };
+    const opening = c.opens && c.plan.movement ? { ensemble: c.opens, sectionIndex: c.plan.movement.startsAtSection, from } : null;
+    return { ...c, plan: { ...c.plan, requestDecisions: decideWishes(wishes, promised, opening).slice(0, 10) } };
   });
 }

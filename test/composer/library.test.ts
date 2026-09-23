@@ -8,7 +8,7 @@ import { LIBRARY } from '../../src/server/composer/library/index.ts';
 import { fillScale, parseScale, pitchClass, transposeTonic, withOctave } from '../../src/server/composer/library/scale.ts';
 import type { Checker } from '../../src/server/types.ts';
 import { isPublicText } from '../../src/shared/text.ts';
-import { PART_ID_PATTERN } from '../../src/shared/music.ts';
+import { BPM_MAX, BPM_MIN, PART_ID_PATTERN } from '../../src/shared/music.ts';
 import { validatePart } from '../../src/strudel/validate.ts';
 import { fullCatalog } from './fixtures.ts';
 
@@ -51,8 +51,11 @@ describe('library shape', () => {
         expect([...v.knobsUsed].sort(), `${ens.id}.${p.id} knobs`).toEqual((p.knobs ?? []).map((k) => k.name).sort());
         for (const t of p.duck?.targets ?? []) expect(ids, `${ens.id}.${p.id} duck`).toContain(t);
       }
+      // Every tempo in the range is one the plan schema accepts.
+      expect(ens.bpm.min, ens.id).toBeGreaterThanOrEqual(BPM_MIN);
       expect(ens.bpm.min).toBeLessThanOrEqual(ens.bpm.default);
       expect(ens.bpm.default).toBeLessThanOrEqual(ens.bpm.max);
+      expect(ens.bpm.max, ens.id).toBeLessThanOrEqual(BPM_MAX);
     }
   });
 

@@ -317,23 +317,33 @@ After a handoff, its first plans are a **carry-vamp**: every current part carrie
 arrangement moves (drop one part and bring it back every 8 bars, knob and level automation, a
 breakdown every third section). Its library is a set of **ensembles**: layered parts (beat, back,
 pulse, low, harmony, hook, colour) that are key- and tempo-agnostic (scale degrees with a `$SCALE`
-placeholder filled with the movement's scale; bpm ranges), each with code **variants** (register up
-or down, thinned, half speed, rotated), all validated once at boot (results cached by code hash; a
-variant that fails is never played). The arranger (`arrange.ts`) realises each role from **recipes**
-of moves per layer — which layers play, entries and exits, faders and level lanes, knob rests and
-sweeps, the variant, the transition — so roles contrast audibly even without drums: intros start
-sparse and swell, builds strip back and layer up under a riser while kick and bass wait, drops
-restart everything after a breath or riser, breakdowns and interludes drop drums and bass and pull the
-harmony down, bridges leave the key. Every side has a home key and **away keys** (the relative mode
-on the same notes, or another mode on the tonic); a role is stated at home first, and each time it
-returns it takes the next recipe, so no two sections of a side are arranged alike. A side runs **8–9
-minutes of music** (its form is cut to that length, and an outro is only written once the plan that
-opens the next side will come after the conductor's 6-minute minimum); the next side follows a tour
-through the library in which neighbours never share a groove family, skipping recent ensembles,
-with a legal tempo move (≤ 12 BPM with a ramp, exact half or double time, or a beatless intro) and a
-related key. Scripted commits obey safety, tempo and lead rules; novelty and dramaturgy violations are
-warnings, and its ledger rows don't count toward cooldown or similarity. It may open its own side
-when the current movement doesn't fit its library.
+placeholder filled with the movement's scale; bpm ranges inside the room's 60–180), each with code
+**variants** (register up or down, thinned, half speed, rotated; time transforms go before the first
+method that reads a knob, so knob lanes stay in score bars), all validated once at boot (results
+cached by code hash; a variant that fails is never played). The arranger (`arrange.ts`) realises
+each role from **recipes** of moves per layer — which layers play, entries and exits, faders and
+level lanes, knob rests and sweeps, the variant, the transition — so roles contrast audibly even
+without drums: intros start sparse and swell, builds strip back and layer up under a riser while
+kick and bass wait, drops restart everything after a breath or riser, breakdowns and interludes drop
+drums and bass and pull the harmony down, bridges leave the key. Every side has a home key and
+**away keys** (the relative mode on the same notes, or another mode on the tonic); a role is stated
+at home first, and each time it returns it takes the next recipe, so no two sections of a side are
+arranged alike. A side runs **8–9 minutes of music** (its form is cut to that length, and an outro is
+only written once the plan that opens the next side will come after the conductor's 6-minute
+minimum); the next side follows a tour through the library in which neighbours never share a
+groove family, skipping recent ensembles, with a legal tempo move (≤ 12 BPM with a ramp, a beatless
+intro, or exact half or double time of both the section playing and the old movement's centre,
+since the conductor checks both) and a related key. The tour is a default, not a veto: the further
+the room leans — the pull pad away from the middle, or mood words in requests ("darker", "calmer",
+weighed by support) — the more of the tour's next six ensembles it chooses among by mood, and a
+clear lean wants the next side to move that way from the side that ends. A mood request is answered
+with what the plan does: "this-plan" when the side it opens went that way, pencilled in ("the next
+side leans darker", read back from the promise) while no side opens, declined when the side that
+opened couldn't. After a carry-vamp, another ensemble joins the side only with room for two sections
+before it closes, and never writes its outro; once the side may be replaced and its time is up, the
+autopilot opens its own side instead. Scripted commits obey safety, tempo and lead rules; novelty and
+dramaturgy violations are warnings, and its ledger rows don't count toward cooldown or similarity.
+It may open its own side when the current movement doesn't fit its library.
 
 ### 7.5 The external driver and CLI
 

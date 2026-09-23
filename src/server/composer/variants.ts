@@ -19,6 +19,20 @@ function octaves(code: string): number[] {
 const shift = (code: string, by: number) => code.replace(OCTAVE, (_, n: string) => `$SCALE${Number(n) + by}`);
 
 /**
+ * A time transform (half speed, rotation) of the whole part but its knobs: it goes before the first
+ * method that reads a knob, because a transform written after knob() moves the automation too
+ * (`.lpf(knob("cut")).slow(2)` plays the lane at half speed) and knob lanes are planned in score bars.
+ * Templates put one method per line; a source line that reads a knob can't be transformed apart from it.
+ */
+function beforeKnobs(code: string, method: string): string | null {
+  const lines = code.split('\n');
+  const at = lines.findIndex((l) => /\bknob\(/.test(l));
+  if (at === 0) return null;
+  if (at < 0) return `${code}\n  .${method}`;
+  return [...lines.slice(0, at), `${/^\s*/.exec(lines[at]!)![0]}.${method}`, ...lines.slice(at)].join('\n');
+}
+
+/**
  * The template code for a variant (placeholders kept), or null when the variant doesn't apply:
  * register moves only for pitched non-bass parts written against `$SCALEn`; thinning and rotation only
  * for hook, pulse and colour layers (harmony may move register or slow to half speed).
@@ -36,9 +50,9 @@ export function variantCode(part: TemplatePart, variant: Variant): string | null
     case 'thin':
       return part.layer === 'harmony' ? null : `${part.code}\n  .degradeBy(0.5)`;
     case 'half':
-      return `${part.code}\n  .slow(2)`;
+      return beforeKnobs(part.code, 'slow(2)');
     case 'iter':
-      return pitched && part.layer !== 'harmony' ? `${part.code}\n  .iter(4)` : null;
+      return pitched && part.layer !== 'harmony' ? beforeKnobs(part.code, 'iter(4)') : null;
   }
 }
 
