@@ -357,9 +357,10 @@ caps, not slowness, are what resist trolls.
 - *Slow lane* (Claude, next unlocked section): the movement baseline moves toward the room by at most
   0.15 per plan (κ = 0.15 + 0.35·confidence), clamped to [0.25, 0.7] unless the movement is ambient.
 
-**Early replan** on strong, sustained consensus: pressure vs baseline > 0.45 for 16 bars (hysteresis
+**Early replan** on strong, sustained consensus: pressure vs baseline > 0.45 for 24 bars (hysteresis
 resets below 0.25), Kish n_eff ≥ min(3, N), ≥ 32 bars since the last one. Half a room of 10–200
-holding one direction from rest gets there after ≈ 45–65 s (120 BPM). It replaces the provisional
+holding one direction from rest gets there after ≈ 65–80 s (120 BPM); the fast
+lane has long since answered, so structure only moves on a lean the room keeps. It replaces the provisional
 section, never the locked ones.
 
 **Stay / Move on**: one ballot per listener (the latest wins); ballots carry the section they were
@@ -402,7 +403,7 @@ section will realise it and when it lands.
 
 These parameters are simulated in `test/room/crowd-sim.test.ts` (a troll pinning the pad for 5
 minutes in a room of 40 moves it by 0.09; 30 sockets from one subnet by 0.17; half the room flipping
-every 40 s causes zero replans, while half the room holding one way for a minute is consensus and
+every 60 s causes zero replans, while half the room holding one way for a minute is consensus and
 replans once).
 
 ## 9. Arc, dramaturgy and novelty

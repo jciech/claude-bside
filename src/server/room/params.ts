@@ -20,7 +20,7 @@ export const CROWD = {
   /** Early replan hysteresis, in bars, against the movement baseline (pad coordinates). */
   pressureOn: 0.45,
   pressureOff: 0.25,
-  pressureHoldBars: 16,
+  pressureHoldBars: 24,
   replanCooldownBars: 32,
   pressureQuorum: 3,
   /** Keep ballots: freshness exp(−age / keepFreshMs), EMA τ keepTauMs, act at |K| > keepOn for keepHoldBars. */

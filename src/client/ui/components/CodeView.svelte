@@ -142,6 +142,7 @@
       title: s.name,
       side: sideLetter(np.movement?.side ?? 1),
       track: s.track,
+      author: s.author,
       bpm: bpmOf(engine.cps()),
       parts: soundingParts(engine, s, engine.now()),
       maps,

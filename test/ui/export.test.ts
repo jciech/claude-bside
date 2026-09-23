@@ -29,7 +29,8 @@ describe('export to strudel.cc', () => {
     const parts = soundingParts(engine, first, 12);
     expect(parts.find((p) => p.id === 'bass')).toMatchObject({ level: 0.5, knobValues: { cut: 692.8 } });
     expect(parts.find((p) => p.id === 'pad')!.level).toBe(0.25);
-    const program = strudelProgram({ title: 'x', side: 'A', track: 1, bpm: 120, parts, maps: [], sourceUrl: '' });
+    const program = strudelProgram({ title: 'x', side: 'A', track: 1, author: 'scripted', bpm: 120, parts, maps: [], sourceUrl: '' });
+    expect(program.split('\n')[0]).toContain('cut live by the autopilot in B-Side');
     expect(program).toContain('.lpf(692.8)');
     expect(program).toContain('.postgain(0.25)');
     const unknown = soundingParts(engine, second, 20);
@@ -58,6 +59,7 @@ describe('export to strudel.cc', () => {
       title: 'First\nLight', // a newline must never escape the comment
       side: 'A',
       track: 1,
+      author: 'claude',
       bpm: 120,
       parts: section.parts.map((p) => ({ id: p.id, code: p.code, level: p.level, knobs: p.knobs })),
       maps: [],

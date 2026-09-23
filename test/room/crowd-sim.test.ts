@@ -138,8 +138,8 @@ describe('C. a quarter of the room pushes', () => {
     expect(sim.count('replan-pressure')).toBe(1);
     const replan = sim.signals[0]!;
     expect(replan).toMatchObject({ type: 'replan-pressure', axis: 'brightness' });
-    expect(replan.t).toBeGreaterThan(50);
-    expect(replan.t).toBeLessThan(90);
+    expect(replan.t).toBeGreaterThan(60);
+    expect(replan.t).toBeLessThan(100);
   });
 });
 
@@ -195,15 +195,14 @@ describe('E. sybils', () => {
 });
 
 describe('K. whiplash', () => {
-  // Holding one way for ~55 s from rest is sustained consensus (C2), so the room flips faster than that.
-  it('half the room flipping every 40 s causes zero replans', () => {
+  it('half the room flipping every 60 s causes zero replans', () => {
     const sim = new Sim();
     const flippers = sim.join(40).slice(0, 20);
     sim.warmUp();
     let swing = 0;
     sim.run(360, (t) => {
       if (t % 10 === 0) {
-        const v = Math.floor(t / 40) % 2 ? 0.9 : -0.9;
+        const v = Math.floor(t / 60) % 2 ? 0.9 : -0.9;
         for (const l of flippers) sim.pad(l, v, v, true);
       }
       swing = Math.max(swing, Math.abs(sim.pull().x));

@@ -8,7 +8,7 @@
   import { startPulse } from './pulse.ts';
   import type { Settings } from './settings.ts';
   import { nowPlaying } from './now.ts';
-  import { sideLetter } from './format.ts';
+  import { sideLetter, trackArtist } from './format.ts';
   import AskPanel from './components/AskPanel.svelte';
   import CodeView from './components/CodeView.svelte';
   import Landing from './components/Landing.svelte';
@@ -100,7 +100,7 @@
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: s.name,
-        artist: 'Claude',
+        artist: trackArtist(s.author),
         album: `B-Side · Side ${sideLetter(np.movement?.side ?? 1)}`,
         artwork: [{ src: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
       });

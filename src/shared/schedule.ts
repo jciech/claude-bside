@@ -92,6 +92,9 @@ export function plannedPlayBars(s: Pick<ScoreShape, 'bars' | 'jumps'>): number {
   return s.bars + jumpDelta(s.jumps);
 }
 
+/** `vamp.loopBars` of a section this long (before the half-section clamp in vampLoopBars). */
+export const vampLoopFor = (bars: number): 4 | 8 => (bars >= 16 ? 8 : 4);
+
 /** Length of the phrase that loops once a section plays past its score (vamp). */
 export function vampLoopBars(s: Pick<ScoreShape, 'bars' | 'vamp'>): number {
   return Math.max(1, Math.min(s.vamp.loopBars, s.bars / 2));

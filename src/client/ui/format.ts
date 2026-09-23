@@ -1,6 +1,7 @@
 // Plain-language wording for everything the room shows: numbers, statuses and the crowd's state in
 // words (docs/DESIGN.md "Accessibility": no jargon, statuses in words). Pure.
 import { cpsToBpm, type SectionRole } from '../../shared/music.ts';
+import type { SectionProgram } from '../../shared/program.ts';
 import type { ComposerStatus, KeepPending, NackReason, PadPoint, RequestStatus } from '../../shared/protocol.ts';
 import type { RequestResult } from '../room/types.ts';
 
@@ -171,6 +172,13 @@ export function composerLine(c: ComposerStatus, serverNowMs: number): string {
 }
 
 const BYLINE: Record<ComposerStatus['driver'], string> = { claude: 'Claude · live', external: 'Guest composer · live', scripted: 'Autopilot · live' };
+
+const ARTIST: Record<SectionProgram['author'], string> = { claude: 'Claude', external: 'Guest composer', scripted: 'Autopilot' };
+
+/** Who wrote a track, as a credit (lock screen, exports). */
+export function trackArtist(author: SectionProgram['author']): string {
+  return ARTIST[author];
+}
 
 /** The record label's byline: who is cutting the record. */
 export function composerByline(driver: ComposerStatus['driver']): string {

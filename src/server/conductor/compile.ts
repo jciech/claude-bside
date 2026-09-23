@@ -7,14 +7,12 @@ import type { Automation, Knob, Plan, SectionPlan } from '../../shared/plan.ts';
 import type { PartRole, SectionRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
 import type { CheckSectionInput } from '../types.ts';
+import { vampLoopFor } from '../../shared/schedule.ts';
 import { levelAt } from './knobs.ts';
 import { patternBarAt } from './placement.ts';
 
 export const ORBITS = 24;
 const NO_VAMP: ReadonlySet<SectionRole> = new Set(['build', 'transition', 'intro', 'outro']);
-
-/** `vamp.loopBars` of a section this long. */
-export const vampLoopFor = (bars: number): SectionProgram['vamp']['loopBars'] => (bars >= 16 ? 8 : 4);
 
 /** Pre-master RMS targets per role (dBFS); parts further than ±4 dB away are trimmed toward them. */
 export const ROLE_RMS_TARGET: Record<PartRole, number> = {

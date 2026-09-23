@@ -7,6 +7,7 @@ import type { Issue } from '../../shared/analysis.ts';
 import type { Catalog } from '../../shared/catalog.ts';
 import type { PlanRequest, TurnContext } from '../../shared/composer-api.ts';
 import type { Knob, Plan } from '../../shared/plan.ts';
+import { vampLoopFor } from '../../shared/schedule.ts';
 import type { CheckPartInput, ComposeOutcome, ComposerTools, Checker, Logger, ScriptedComposer } from '../types.ts';
 import { planCandidates, type AutopilotLibrary } from './autopilot.ts';
 import { LIBRARY, type Ensemble } from './library/index.ts';
@@ -82,7 +83,7 @@ export async function createScriptedComposer(opts: ScriptedOptions): Promise<Scr
       const parts = partsFor(ens, scale);
       let check;
       try {
-        check = await checker.checkSection({ parts, bpm: ens.bpm.default, scale, bars: 16 }, { priority: 'audition' });
+        check = await checker.checkSection({ parts, bpm: ens.bpm.default, scale, bars: 16, vampLoopBars: vampLoopFor(16) }, { priority: 'audition' });
       } catch (e) {
         log.warn('scripted: ensemble could not be checked', { ensemble: ens.id, error: (e as Error).message });
         return null;
@@ -120,7 +121,7 @@ export async function createScriptedComposer(opts: ScriptedOptions): Promise<Scr
       if (!fresh.length) continue;
       const parts = fresh.map((p) => ({ id: p.id, role: p.role, code: p.code!, knobs: p.knobs, chromatic: p.chromatic, level: p.level, enterBar: 0, exitBar: null, patternBarAtStart: 0 }));
       try {
-        const check = await checker.checkSection({ parts, bpm: s.bpm, scale: s.scale, bars: s.bars }, { priority: 'audition', signal });
+        const check = await checker.checkSection({ parts, bpm: s.bpm, scale: s.scale, bars: s.bars, vampLoopBars: vampLoopFor(s.bars) }, { priority: 'audition', signal });
         check.parts.forEach((p, i) => verdicts.set(codeKey(parts[i]!.code, parts[i]!.knobs), p.ok));
       } catch {
         return !signal.aborted;

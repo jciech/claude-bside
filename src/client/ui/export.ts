@@ -28,12 +28,15 @@ export interface ExportInput {
   title: string;
   side: string;
   track: number;
+  author: SectionProgram['author'];
   bpm: number;
   parts: readonly ExportPart[];
   /** Maps the section's sounds come from (see `mapsForSounds`). */
   maps: readonly CatalogMap[];
   sourceUrl: string;
 }
+
+const CUT_BY: Record<SectionProgram['author'], string> = { claude: 'Claude', external: 'a guest composer', scripted: 'the autopilot' };
 
 const oneLine = (s: string): string => s.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
 
@@ -86,7 +89,7 @@ export function sampleLines(maps: readonly CatalogMap[]): string[] {
 
 export function strudelProgram(input: ExportInput): string {
   const lines = [
-    `// "${oneLine(input.title)}" — Side ${oneLine(input.side)}, track ${input.track}, cut live by Claude in B-Side`,
+    `// "${oneLine(input.title)}" — Side ${oneLine(input.side)}, track ${input.track}, cut live by ${CUT_BY[input.author]} in B-Side`,
     `// ${oneLine(input.sourceUrl)}`,
     `setcpm(${num(input.bpm)}/4)`,
     ...sampleLines(input.maps),
