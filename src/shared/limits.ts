@@ -105,6 +105,40 @@ export const MAX_PART_ONSETS_PLAYED_PER_BAR = 2 * MAX_PART_ONSETS_PER_BAR;
 /** Density-multiplying arguments (fast, ply, `*n`, segment, chop…) must be constants ≤ this. */
 export const MAX_DENSITY_FACTOR = 16;
 
+/**
+ * What one query of one part may cost before it is stopped (src/strudel/guard.ts): pattern queries
+ * made (and patterns built while querying), and haps returned, summed over every level of the pattern.
+ * No single query may cover more cycles than haps remain (a leaf builds one per cycle at once).
+ */
+export interface QueryLimits {
+  calls: number;
+  haps: number;
+}
+
+// Calibration (test/strudel/guard.test.ts keeps it true): every autopilot template in every variant,
+// the build riser, the composer's reference-card examples, the fixture snapshot and the validator's
+// idiomatic corpus (603 distinct codes), knobs at their defaults, wrapped and queried as the
+// performer does them, bars 0–63:
+//  - a quarter-bar query (longer than any scheduler tick: 0.25 s of look-ahead at 180 BPM is 0.19 bar;
+//    a steady tick is 0.025 bar) took at most 428 calls and 758 haps (glass-drift's pad at half
+//    speed re-reads its values over its 4-bar events in every query);
+//  - a one-bar query took at most 1356 calls and 1328 haps (idm's arp with iter).
+// The limits sit 20× or more above those. Overhead, best of 9 runs of 1/40-bar queries: a budgeted
+// query takes 6–18% longer (2–9 µs on 30–300 µs), half of it the check on the span a query covers;
+// with no budget active the accessor is within noise (−3…+4%).
+/** Queries up to this many bars (every audio tick) get QUERY_BUDGET_TICK. */
+export const QUERY_BUDGET_TICK_BARS = 1 / 4;
+export const QUERY_BUDGET_TICK: QueryLimits = { calls: 10_000, haps: 16_000 };
+/** Longer queries (visual lookahead, preloading, the checker's bars) get this much per bar they span. */
+export const QUERY_BUDGET_PER_BAR: QueryLimits = { calls: 30_000, haps: 30_000 };
+
+/** The budget of one query spanning `bars` bars. */
+export function queryBudget(bars: number): QueryLimits {
+  if (bars <= QUERY_BUDGET_TICK_BARS) return QUERY_BUDGET_TICK;
+  const n = Math.max(1, Math.ceil(bars - 1e-9));
+  return { calls: n * QUERY_BUDGET_PER_BAR.calls, haps: n * QUERY_BUDGET_PER_BAR.haps };
+}
+
 export interface LimitViolation {
   key: string;
   value: unknown;

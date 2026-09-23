@@ -9,6 +9,7 @@ import * as tonal from '@strudel/tonal';
 import { transpiler } from '@strudel/transpiler';
 import type { Issue } from '../shared/analysis.ts';
 import { ALLOWLIST } from './allowlist.ts';
+import './guard.ts'; // the query budget must be in place before part code builds any pattern
 import { checkTranspiled } from './validate.ts';
 
 export interface KnobBinder {

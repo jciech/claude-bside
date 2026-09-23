@@ -31,13 +31,16 @@
 //    high-pass sweep 200→8000 Hz → gain ≈ −18 dBFS) into the master bus before the limiter. A
 //    transition window that began before the section arrived is skipped, never joined part-way.
 //  • Vamp: past its score a section loops its last phrase (vamp.loopBars) if vamp.allowed.
-//  • Guard: a part whose query throws, yields > MAX_PART_HAPS_PER_TICK haps in a tick, whose query
-//    time EMA exceeds 4 ms, or that has more than MAX_PART_ONSETS_PLAYED_PER_BAR
-//    (2 × MAX_PART_ONSETS_PER_BAR) onsets within one bar is muted until the section ends and emits
-//    partError. The tick and time rules depend on the client's timing; the per-bar count is the
-//    deterministic backstop (the bar's first MAX_PART_ONSETS_PLAYED_PER_BAR onsets play, then the
-//    part is muted). At most MAX_HAPS_PER_TICK haps per tick overall (drop in reverse role
-//    priority: texture first, kick last).
+//  • Guard: every query of a part runs within the query budget (queryBudget(span) in
+//    src/shared/limits.ts, enforced from inside Strudel by src/strudel/guard.ts): a query that would
+//    need more pattern queries or haps stops as soon as it passes the limit, before it can freeze the
+//    tab, and the part is muted with code 'density'. A part whose query throws otherwise ('query'),
+//    yields > MAX_PART_HAPS_PER_TICK haps in a tick, whose query time EMA exceeds 4 ms, or that has
+//    more than MAX_PART_ONSETS_PLAYED_PER_BAR (2 × MAX_PART_ONSETS_PER_BAR) onsets within one bar is
+//    muted until the section ends and emits partError. The tick and time rules depend on the
+//    client's timing; the per-bar count is the deterministic backstop (the bar's first
+//    MAX_PART_ONSETS_PLAYED_PER_BAR onsets play, then the part is muted). At most MAX_HAPS_PER_TICK
+//    haps per tick overall (drop in reverse role priority: texture first, kick last).
 //  • Scheduler: queries are split at tempo-segment boundaries (controls {_cps, cyclist:'synced'});
 //    durations use msAtCycle; superdough's async errors are caught per hap → partError.
 //  • Master: orbit sum → safety/tilt EQ → master trim → limiter (DynamicsCompressor) → soft clip →

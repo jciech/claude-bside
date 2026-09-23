@@ -126,11 +126,11 @@ describe('density bombs: every argument that multiplies events or work is bounde
     ['n("0 2").scale("C:major").strans("<0 1e300>")', /offset of \.strans\(\) reaches/],
     ['n("0 2").scale("C:major").scaleTrans("<0 2>".mul(1e6))', /offset of \.scaleTrans\(\) must be a number/],
     ['s("sawtooth").partials(randL(1000000))', /length of randL\(\) is 1000000/],
-    [`s("hh*16").gain(${stacked(16)}).pan(${stacked(16)})`, /up to 4096 events in a single bar/],
-    [`s("hh*16").gain(${stacked(16)}).every(2, x => x.pan(${stacked(16)}))`, /up to 4096 events/],
-    ['s("hh*16").bite(4, "0*16".fast(16))', /up to 32768 events/],
+    [`s("hh*16").gain(${stacked(16)}).pan(${stacked(16)})`, /up to 4640 events in a single bar/],
+    [`s("hh*16").gain(${stacked(16)}).every(2, x => x.pan(${stacked(16)}))`, /up to 8720 events/],
+    ['s("hh*16").bite(4, "0*16".fast(16))', /up to 4096 events/],
     ['n("[0,4,7]").s("sine").every(2, x => x.struct("[x,x,x,x]*16")).every(2, x => x.struct("[x,x,x,x]*16"))', /could produce up to/],
-    ['s("hh*16").late("[0,0.01,0.02,0.03]").late("[0,0.01,0.02,0.03]").late("[0,0.01,0.02,0.03]").late("[0,0.01,0.02,0.03]")', /up to 4096 events/],
+    ['s("hh*16").late("[0,0.01,0.02,0.03]").late("[0,0.01,0.02,0.03]").late("[0,0.01,0.02,0.03]").late("[0,0.01,0.02,0.03]")', /up to 12736 events/],
   ])('rejects %j', (code, message) => {
     const v = validatePart(code, K);
     expect(v.ok).toBe(false);
@@ -235,6 +235,34 @@ describe('mini-notation bounds', () => {
     expect(events('0 .. 7')).toBe(8);
     expect(events('[a|b*4|c]')).toBe(4);
     expect(events('~ ~')).toBe(0);
+    // In <…> a replicated or weighted step lasts more cycles; it does not play more per cycle.
+    expect(events('<C:minor!32 F:minor!32>')).toBe(1);
+    expect(events('<a!24 [b c]!8>')).toBe(2);
+    expect(events('<a@32 b@32>')).toBe(1);
+    expect(checkMini('<C:minor!32 F:minor!32>')).toMatchObject({ ok: true, problems: [] });
+    expect(checkMini('<C:minor@32 F:minor@32>')).toMatchObject({ ok: true, problems: [] });
+    expect(checkMini('a!32')).toMatchObject({ ok: true, problems: [expect.objectContaining({ message: '"!" count 32 is outside 0…16' })] });
+  });
+
+  it('computes the longest event in cycles', () => {
+    const span = (s: string) => {
+      const m = checkMini(s);
+      if (!m.ok) throw new Error(m.message);
+      return m.span;
+    };
+    expect(span('a')).toBe(1);
+    expect(span('a b')).toBe(0.5);
+    expect(span('bd*4')).toBe(0.25);
+    expect(span('a@3 b')).toBe(0.75);
+    expect(span('a/4')).toBe(4);
+    expect(span('[a b]/2')).toBe(1);
+    expect(span('<a@3 b>')).toBe(3);
+    expect(span('<a!3 b>')).toBe(1);
+    expect(span('<a b>/2')).toBe(2);
+    expect(span('a*0.001')).toBe(1000);
+    expect(span('a/<2 1000>')).toBe(1000);
+    expect(span('{a b c}%2')).toBe(0.5);
+    expect(span('~')).toBe(0);
   });
 
   it('computes how many events can sound at once, and list lengths', () => {

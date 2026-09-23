@@ -72,6 +72,9 @@ export interface CompiledPart { pattern: any /* Strudel Pattern */; miniLocation
 export function compilePart(code: string, opts: { knob: KnobBinder; evaluator?: (source: string, names: string[], values: unknown[]) => unknown }): CompiledPart;
 export function allowedScope(): Record<string, unknown>;                      // exactly the allowlisted values + m
 
+// src/strudel/guard.ts — isomorphic; installed on import (compile.ts imports it)
+export function withQueryBudget<T>(limits: QueryLimits, fn: () => T, usage?: { calls: number; haps: number }): T; // throws QueryBudgetExceeded
+
 // src/strudel/analyze.ts — isomorphic
 export function analyzeSection(input: { parts: (CheckPartInput & { pattern: any })[]; bpm: number; scale: string | null; bars: number; index: SoundIndex }): {
   parts: { id: string; analysis: PartAnalysis; digest: PartDigest; instrument: string; errors: Issue[]; warnings: Issue[] }[];

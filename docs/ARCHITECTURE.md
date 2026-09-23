@@ -534,15 +534,28 @@ depth:
    literal naming a declared knob. Arguments that multiply events or a query's work (`fast`, `ply`,
    `*n`, `segment`, `chop`, `inside`, `swing`, `shuffle`, `chunk`…) must be constants ≤ 16, and
    `every`/`lastOf` counts constants too (no knobs, no patterns); `scaleTranspose` offsets are literal
-   numbers within ±128. A static worst case of events per bar — structure sources × multipliers ×
-   the polyphony of every patterned value joined into a pattern (`.gain("[1,1]")` plays each event
-   twice) — must stay ≤ 16× the per-part limit, so no later bar or knob position can exceed it.
+   numbers and `binaryL` a constant number. A static worst case of the haps one bar's query builds —
+   not only the onsets it plays, but the fragments and intermediate haps Strudel creates on the way —
+   must stay ≤ 16× the per-part limit, so no later bar or knob position can exceed it. It is the
+   structure sources × the multipliers, plus the work of every join as Strudel does it
+   (`src/strudel/density.ts`): a patterned value is read over the whole of each receiver event, so
+   its own multipliers count and so does the length of those events (`.gain("[1,1]")` also plays
+   each event twice); an out-join (`struct`, `arp`, `pick`, `.add.out`…) re-reads its whole receiver
+   at every structure event; a squeeze (`bite`, `inhabit`, `reset`…) multiplies the events of its two
+   patterns; and a pattern queried again per event of another pays its fixed per-query cost each
+   time. A value that cannot be computed (NaN, Infinity) counts as unbounded.
 2. **Isolated evaluation** in worker threads (vm context with no ambient globals), per-job timeout,
-   heap cap, recycled workers, and analysis over the whole section plus a vamp loop.
+   heap cap, recycled workers, and analysis over the whole section plus a vamp loop. Every analysis
+   query runs within the engine's query budget, so a part the static bound misses fails the check
+   as a density error instead of timing the worker out.
 3. **Client re-validation** with the same allowlist before compiling anything, and a compile scope
    that contains exactly the allowlisted values plus `m` and the part's `knob`.
-4. **Client sanitization** of every hap value, innermost (`sanitizeModelValue`), and a per-part
-   density/time guard plus a per-tick hap cap in the scheduler.
+4. **Client sanitization** of every hap value, innermost (`sanitizeModelValue`), a per-part
+   density/time guard plus a per-tick hap cap in the scheduler, and a **query budget**
+   (`src/strudel/guard.ts`, limits in `src/shared/limits.ts`): an accessor on `Pattern.prototype.query`
+   counts the queries and haps of every pattern level while a part's query runs and stops it past the
+   limit (20× what the autopilot's library needs), before a runaway query can freeze the tab; the
+   part is muted as a density problem.
 5. **Content-Security-Policy** in production: `default-src 'none'; script-src 'self' 'unsafe-eval'
    blob: data:; worker-src 'self' blob: data:; connect-src 'self' https://raw.githubusercontent.com;
    img-src 'self' data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self';
@@ -609,6 +622,7 @@ src/
     compile.ts       validated code → Pattern (scope as parameters, knob binding, locations)
     analyze.ts       hap-level descriptors, key fit, limits, density, fingerprint
     features.ts density.ts scales.ts query.ts mini.ts suggest.ts ("did you mean")
+    guard.ts         runtime query budget (the backstop behind density.ts)
     catalog.ts       parseCatalog, createSoundIndex (pure)
   server/
     main.ts config.ts log.ts types.ts

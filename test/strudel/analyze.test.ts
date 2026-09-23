@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { fingerprintDistance, type SectionCheck } from '../../src/shared/analysis.ts';
+import { fingerprintDistance, type Issue, type SectionCheck } from '../../src/shared/analysis.ts';
 import { MAX_PART_ONSETS_PER_BAR } from '../../src/shared/limits.ts';
 import type { SectionProgram } from '../../src/shared/program.ts';
 import type { CheckPartInput, CheckSectionInput } from '../../src/server/types.ts';
@@ -8,6 +8,7 @@ import { runCheck } from '../../src/server/check/run.ts';
 import { analyzeSection } from '../../src/strudel/analyze.ts';
 import { createSoundIndex, parseCatalog } from '../../src/strudel/catalog.ts';
 import { compilePart } from '../../src/strudel/compile.ts';
+import { resolveScales } from '../../src/strudel/scales.ts';
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/${name}`, import.meta.url), 'utf8'));
 const index = createSoundIndex(parseCatalog(fixture('catalog.small.json')));
@@ -352,6 +353,19 @@ describe('the section scale', () => {
     expect(performance.now() - t0).toBeLessThan(1000);
     expect(c.errors[0]).toMatchObject({ rule: 'scale', path: 'scale', message: expect.stringMatching(/^The scale "C:major\*5000" is too busy/) });
     expect(check([part('lead', 'note("c4 e4 g4")')], { scale: '[C:major F:major]' }).errors).toEqual([]);
+    expect(check([part('lead', 'note("c4 e4 g4")')], { scale: 'C:major!32' }).errors[0]!.message).toMatch(/too busy/);
+  });
+
+  it('accepts slow key changes: "!" and "@" inside <…> make a scale last longer, not change faster', () => {
+    for (const scale of ['<C:minor!32 F:minor!32>', '<C:minor@32 F:minor@32>', '<C:minor!24 Eb:major!8>']) {
+      const errors: Issue[] = [];
+      const lookup = resolveScales(scale, 64, errors);
+      expect(errors, scale).toEqual([]);
+      expect(lookup, scale).not.toBeNull();
+    }
+    const lookup = resolveScales('<C:minor!32 F:minor!32>', 64, [])!;
+    expect([...lookup(31, 0)!].sort((a, b) => a - b)).toEqual([0, 2, 3, 5, 7, 8, 10]);
+    expect([...lookup(32, 0)!].sort((a, b) => a - b)).toEqual([0, 1, 3, 5, 7, 8, 10]);
   });
 });
 

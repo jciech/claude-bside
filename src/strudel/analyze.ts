@@ -7,7 +7,7 @@ import type { Issue, MixAnalysis, PartAnalysis, PartDigest, SectionFingerprint, 
 import { laneValue, lanesFor } from '../shared/automation.ts';
 import type { CatalogSound } from '../shared/catalog.ts';
 import { BLOCKED_SOUNDS, failingVariant } from '../shared/catalog.ts';
-import { HAP_LIMITS, MAX_MIX_ONSETS_PER_BAR, MAX_PART_ONSETS_PER_BAR, findLimitViolations } from '../shared/limits.ts';
+import { HAP_LIMITS, MAX_MIX_ONSETS_PER_BAR, MAX_PART_ONSETS_PER_BAR, findLimitViolations, queryBudget } from '../shared/limits.ts';
 import { PERCUSSIVE_ROLES, PITCHED_ROLES, bpmToCps, secondsPerBar, type PartRole } from '../shared/music.ts';
 import { vampLoopBars } from '../shared/schedule.ts';
 import type { CheckPartInput, CheckSectionInput } from '../server/types.ts';
@@ -16,6 +16,7 @@ import {
   chordCycleHash, clamp01, clusterScore, dbLoudness, densityScore, gainLoudness, intensityOf, lcm, mean, median, midiName,
   normalise, periodOf, pitchClass, registerOf, round, stepOf, syncopation,
 } from './features.ts';
+import { isQueryBudgetExceeded, withQueryBudget } from './guard.ts';
 import { captureLogs, cycleState } from './query.ts';
 import { resolveScales, type ScaleLookup } from './scales.ts';
 
@@ -53,6 +54,12 @@ const RANDOM_PROBE_BARS = 8;
 const RANDOM_SEED = 7919;
 /** Beyond the validator's static bound; only reachable if something upstream failed. */
 const HAPS_PER_QUERY_GUARD = 20_000;
+/** One bar of a part, within the engine's query budget: a query that would cost more stops early. */
+const queryBar = (pattern: any, bar: number, controls: Record<string, unknown>): any[] =>
+  withQueryBudget(queryBudget(1), () => pattern.query(cycleState(bar, bar + 1, controls)));
+const overBudget = (bar: number, e: Error, partId: string): Issue =>
+  issue('density', `Playing bar ${bar} needs more work than the engine allows for one query (${e.message}).`, partId,
+    'Simplify the part: fewer stacked multipliers, and no long events read at every step.');
 const KEY_FIT_ERROR = 0.6;
 const KEY_FIT_WARNING = 0.8;
 const MIN_PITCHED_FOR_KEY_FIT = 4;
@@ -167,9 +174,11 @@ function scanPart(part: Scan['part'], ctx: ScanContext): Scan {
       const pb = part.patternBarAtStart + (continues ? bar : scoreBar(bar));
       let haps: any[];
       try {
-        haps = part.pattern.query(cycleState(pb, pb + 1, controls));
+        haps = queryBar(part.pattern, pb, controls);
       } catch (e) {
-        scan.errors.push(issue('runtime', `Playing bar ${bar} failed: ${(e as Error).message}`, part.id, runtimeHint((e as Error).message)));
+        scan.errors.push(isQueryBudgetExceeded(e)
+          ? overBudget(bar, e, part.id)
+          : issue('runtime', `Playing bar ${bar} failed: ${(e as Error).message}`, part.id, runtimeHint((e as Error).message)));
         scan.failed = true;
         return;
       }
@@ -199,7 +208,7 @@ function scanPart(part: Scan['part'], ctx: ScanContext): Scan {
       scan.perBar.set(bar, count);
       if (bar >= 0 && (continues || bar < ctx.bars)) scan.signatures.push(sig.sort().join(';'));
     }
-    scan.random = !scan.failed && isRandom(part, scan.signatures, controls, ctx.analysedBars);
+    scan.random = !scan.failed && isRandom(scan, controls, ctx.analysedBars);
   });
 
   problems.flush(scan, logs);
@@ -210,11 +219,22 @@ function scanPart(part: Scan['part'], ctx: ScanContext): Scan {
   return scan;
 }
 
-function isRandom(part: Scan['part'], signatures: string[], controls: Record<string, unknown>, analysedBars: number): boolean {
+/** Whether another random seed changes what the first bars play (a bar past the query budget fails the scan). */
+function isRandom(scan: Scan, controls: Record<string, unknown>, analysedBars: number): boolean {
+  const { part, signatures } = scan;
   const probe = Math.min(RANDOM_PROBE_BARS, analysedBars, signatures.length);
   for (let bar = 0; bar < probe; bar++) {
     const pb = part.patternBarAtStart + bar;
-    const haps = (part.pattern.query(cycleState(pb, pb + 1, { ...controls, randSeed: RANDOM_SEED })) as any[])
+    let played: any[];
+    try {
+      played = queryBar(part.pattern, pb, { ...controls, randSeed: RANDOM_SEED });
+    } catch (e) {
+      if (!isQueryBudgetExceeded(e)) throw e;
+      scan.errors.push(overBudget(bar, e, part.id));
+      scan.failed = true;
+      return false;
+    }
+    const haps = played
       .filter((h) => h.whole && h.hasOnset())
       .map((h) => `${round(h.whole.begin.valueOf() - pb, 4)}/${round(h.whole.end.valueOf() - h.whole.begin.valueOf(), 4)}/${stable(h.value)}`);
     if (haps.sort().join(';') !== signatures[bar]) return true;
@@ -846,6 +866,8 @@ export interface Probe {
   violations: { key: string; value: unknown; range: string }[];
   /** The busiest bar (0 = `fromBar`) and its onsets; a bar past the query guard stops the probe. */
   densest: { bar: number; onsets: number };
+  /** The bar (0 = `fromBar`) whose query ran out of the engine's query budget, which stops the probe. */
+  overBudget?: number;
 }
 
 /** Limits and density over the first `bars` bars of a pattern (for knob extremes), one bar per query. */
@@ -853,7 +875,13 @@ export function probeBars(pattern: any, fromBar: number, bars: number, bpm: numb
   const out = new Map<string, { key: string; value: unknown; range: string }>();
   const densest = { bar: 0, onsets: 0 };
   for (let bar = 0; bar < bars; bar++) {
-    const haps = pattern.query(cycleState(fromBar + bar, fromBar + bar + 1, { _cps: bpmToCps(bpm) })) as any[];
+    let haps: any[];
+    try {
+      haps = queryBar(pattern, fromBar + bar, { _cps: bpmToCps(bpm) });
+    } catch (e) {
+      if (!isQueryBudgetExceeded(e)) throw e;
+      return { violations: [...out.values()], densest, overBudget: bar };
+    }
     if (haps.length > HAPS_PER_QUERY_GUARD) return { violations: [...out.values()], densest: { bar, onsets: haps.length } };
     let onsets = 0;
     for (const hap of haps) {

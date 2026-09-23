@@ -6,10 +6,11 @@ import * as core from '@strudel/core';
 import type { Knob } from '../../shared/plan.ts';
 import type { MixerState } from '../../shared/program.ts';
 import { ROLE_FAMILY, type PartRole } from '../../shared/music.ts';
-import { MAX_HAPS_PER_TICK, MAX_PART_HAPS_PER_TICK, MAX_PART_ONSETS_PLAYED_PER_BAR, sanitizeModelValue } from '../../shared/limits.ts';
+import { MAX_HAPS_PER_TICK, MAX_PART_HAPS_PER_TICK, MAX_PART_ONSETS_PLAYED_PER_BAR, queryBudget, sanitizeModelValue } from '../../shared/limits.ts';
 import { scoreBarAt, vampLoopBars } from '../../shared/schedule.ts';
 import type { TelemetryErrorCode } from '../../shared/protocol.ts';
 import { compilePart } from '../../strudel/compile.ts';
+import { isQueryBudgetExceeded, withQueryBudget } from '../../strudel/guard.ts';
 import { validatePart } from '../../strudel/validate.ts';
 import { instanceGainAt } from './envelope.ts';
 import { applyBrightness, clamp, knobAt, macrosAt } from './knobs.ts';
@@ -141,7 +142,8 @@ export class Performer {
       try {
         haps = this.query(inst, compiled, from, to, { ...opts, resumeAt });
       } catch (e) {
-        this.mute(inst, 'query', `The part stopped: its pattern threw while playing (${String((e as Error)?.message ?? e)}).`);
+        if (isQueryBudgetExceeded(e)) this.mute(inst, 'density', `The part was muted: ${e.message} (query budget).`);
+        else this.mute(inst, 'query', `The part stopped: its pattern threw while playing (${String((e as Error)?.message ?? e)}).`);
         continue;
       }
       if (opts.guard) {
@@ -175,7 +177,8 @@ export class Performer {
     for (let a = quantize(from); a < to && out.length < limit; a += 1) {
       try {
         for (const h of this.query(inst, compiled, a, quantize(Math.min(to, a + 1)), { cps, limitPerInstance: limit - out.length })) out.push(h.value);
-      } catch {
+      } catch (e) {
+        if (isQueryBudgetExceeded(e)) this.mute(inst, 'density', `The part was muted: ${e.message} (query budget).`);
         break;
       }
     }
@@ -255,7 +258,7 @@ export class Performer {
       compiled.binding.inst = inst;
       compiled.binding.shift = run.shift;
       const span = new core.TimeSpan(fraction(qFrom), fraction(run.to - run.shift));
-      const haps = compiled.pattern.query(new core.State(span, controls));
+      const haps = withQueryBudget(queryBudget(run.to - run.from), () => compiled.pattern.query(new core.State(span, controls)));
       for (const hap of haps) {
         if (!hap.whole) continue;
         const wholeBegin = hap.whole.begin.valueOf();

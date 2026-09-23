@@ -164,7 +164,7 @@ export function validatePart(code: string, opts: { knobs: string[] }): ValidateR
 
   if (r.errors.length === 0 && expression) {
     const bound = densityBound(declarations, expression);
-    if (bound.events > STATIC_EVENTS_CEILING) {
+    if (!(bound.events <= STATIC_EVENTS_CEILING)) {
       r.error('density', `This part could produce up to ${formatCount(bound.events)} events in a single bar (static limit ${STATIC_EVENTS_CEILING}).`, null,
         `Largest multipliers: ${bound.multipliers.slice(0, 4).join(', ') || 'the mini-notation itself'}. Use smaller counts or fewer stacked copies (limit ${MAX_PART_ONSETS_PER_BAR} onsets per bar).`);
     }

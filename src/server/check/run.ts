@@ -59,8 +59,16 @@ function knobExtremes(part: CheckPartInput, bpm: number): { errors: Issue[]; war
   for (const edge of part.knobs.length ? (['min', 'max'] as const) : []) {
     try {
       const { pattern } = compilePart(part.code, { knob: knobsAt(part.knobs, edge), evaluator });
-      const { violations, densest } = probeBars(pattern, part.patternBarAtStart, 2, bpm);
-      if (densest.onsets > MAX_PART_ONSETS_PER_BAR) {
+      const { violations, densest, overBudget } = probeBars(pattern, part.patternBarAtStart, 2, bpm);
+      if (overBudget !== undefined) {
+        found.errors.push({
+          severity: 'error',
+          rule: 'density',
+          message: `With its knobs at their ${edge}, playing bar ${overBudget} needs more work than the engine allows for one query.`,
+          path: part.id,
+          hint: `Narrow the knob's ${edge}, or keep knobs out of what sets the number of events.`,
+        });
+      } else if (densest.onsets > MAX_PART_ONSETS_PER_BAR) {
         found.errors.push({
           severity: 'error',
           rule: 'density',

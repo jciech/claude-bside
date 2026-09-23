@@ -43,7 +43,7 @@ export function resolveScales(scale: string | null, bars: number, errors: Issue[
   if (scale === null || scale.trim() === '') return null;
   const bounded = checkMini(scale);
   if (bounded.ok) {
-    const busy = bounded.problems[0]?.message ?? (bounded.events > MAX_SCALES_PER_BAR ? `it changes up to ${bounded.events} times in a bar` : null);
+    const busy = bounded.problems[0]?.message ?? (!(bounded.events <= MAX_SCALES_PER_BAR) ? `it changes up to ${bounded.events} times in a bar` : null);
     if (busy) {
       errors.push(scaleIssue(`The scale "${scale}" is too busy: ${busy}.`, `Change scale at most ${MAX_SCALES_PER_BAR} times a bar, e.g. "<D:dorian G:mixolydian>".`));
       return null;

@@ -31,6 +31,8 @@ export type MiniCheck =
       polyphony: number;
       /** Longest `a:b:c` list a single event carries (1 when there are no lists). */
       listLength: number;
+      /** Longest event, in cycles ("a/4" → 4, "<a@3 b>" → 3, "a b" → 1/2; 0 for rests only). */
+      span: number;
       problems: MiniProblem[];
       constant: number | null;
     }
@@ -69,8 +71,16 @@ function parseAndBound(value: string): MiniCheck {
     return { ok: false, offset, ...describeSyntaxError(value, offset, err) };
   }
   const problems: MiniProblem[] = [];
-  if (!isNode(ast)) return { ok: true, events: 1, polyphony: 1, listLength: 1, problems, constant: null };
-  return { ok: true, events: countEvents(ast, problems), polyphony: polyphonyOf(ast), listLength: listLengthOf(ast), problems, constant: constantOf(ast) };
+  if (!isNode(ast)) return { ok: true, events: 1, polyphony: 1, listLength: 1, span: 1, problems, constant: null };
+  return {
+    ok: true,
+    events: countEvents(ast, problems),
+    polyphony: polyphonyOf(ast),
+    listLength: listLengthOf(ast),
+    span: spanOf(ast),
+    problems,
+    constant: constantOf(ast),
+  };
 }
 
 /** Numeric atoms of a mini string: the largest magnitude, and whether any atom is not a number. */
@@ -221,7 +231,11 @@ function checkFactor(values: number[], at: KNode, label: string, problems: MiniP
   return Math.min(Math.max(1, max), MAX_DENSITY_FACTOR * 4);
 }
 
-function elementEvents(el: KNode, problems: MiniProblem[]): number {
+/**
+ * Worst events of one element. As a step of `<…>` (`inSlowcat`) its `!` copies and `@` weight make it
+ * last more cycles, not play more per cycle: slowcatWorst accounts for them.
+ */
+function elementEvents(el: KNode, problems: MiniProblem[], inSlowcat = false): number {
   let events = isNode(el.source_) ? countEvents(el.source_, problems) : 1;
   const ops = el.options_?.ops ?? [];
   for (const op of ops) {
@@ -234,7 +248,7 @@ function elementEvents(el: KNode, problems: MiniProblem[]): number {
         break;
       }
       case 'replicate':
-        events *= checkFactor([Number(a.amount)], el, '"!" count', problems);
+        if (!inSlowcat) events *= checkFactor([Number(a.amount)], el, '"!" count', problems);
         break;
       case 'bjorklund': {
         const pulses = valuesOf(a.pulse, problems, 'euclid pulses');
@@ -259,7 +273,7 @@ function elementEvents(el: KNode, problems: MiniProblem[]): number {
     }
   }
   const weight = el.options_?.weight ?? 1;
-  if (!ops.some((op) => op.type_ === 'replicate') && weight > MAX_DENSITY_FACTOR) {
+  if (!inSlowcat && !ops.some((op) => op.type_ === 'replicate') && weight > MAX_DENSITY_FACTOR) {
     problems.push({ message: `"@${weight}" is longer than ${MAX_DENSITY_FACTOR}`, offset: offsetOf(el), hint: `Keep weights ≤ ${MAX_DENSITY_FACTOR}.` });
   }
   return events;
@@ -289,14 +303,92 @@ function patternEvents(p: KNode, problems: MiniProblem[]): number {
   }
 }
 
-/** Worst events in one cycle of `<a b c>`: each element spans `weight` cycles. */
+/**
+ * Worst events in one cycle of `<a b c>`. A step lasts `weight` cycles and plays its `!` copies one
+ * after another (mini.mjs: repeatCycles(n).fast(n) on a step of weight n), so "<a!32 b!32>" still
+ * plays one step per cycle.
+ */
 function slowcatWorst(seq: KNode, problems: MiniProblem[]): number {
   if (seq.type_ !== 'pattern') return countEvents(seq, problems);
-  const els = childrenOf(seq);
-  const per = els.map((el) => ({ events: countEvents(el, problems), weight: weightOf(el) }));
+  const per = childrenOf(seq).map((el) => ({ events: elementEvents(el, problems, true) * repsOf(el), weight: weightOf(el) }));
   if (per.some((x) => x.weight < 1)) return per.reduce((a, x) => a + x.events, 0);
   const worst = Math.max(0, ...per.map((x) => Math.ceil(x.events / x.weight)));
   return per.every((x) => Number.isInteger(x.weight)) ? worst : 2 * worst;
+}
+
+function repsOf(el: KNode): number {
+  const op = el.options_?.ops?.find((o) => o.type_ === 'replicate');
+  const n = Number(op?.arguments_.amount ?? 1);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+/** Numeric atoms of an amount sub-pattern, without reporting (countEvents reports them). */
+const amounts = (node: unknown): number[] => valuesOf(node, [], '');
+
+// ─── Event length ─────────────────────────────────────────────────────────────────────────────────
+// How long one event can last, in cycles, following mini.mjs: a step of weight w in a sequence of
+// total weight W lasts w/W of its parent's cycle; in `<…>` it lasts w cycles (the sequence is slowed
+// by W), in `{…}%n` w/n cycles.
+
+function spanOf(node: KNode): number {
+  switch (node.type_) {
+    case 'atom':
+      return REST.has(String(node.source_)) ? 0 : 1;
+    case 'element':
+      return elementSpan(node);
+    case 'pattern':
+      return patternSpan(node);
+    case 'stretch':
+      return (isNode(node.source_) ? spanOf(node.source_) : 1) * Math.max(0, ...amounts(node.arguments_?.amount));
+    default:
+      return 1;
+  }
+}
+
+/** An element's longest event within its own cycle, before its step's share of the parent. */
+function elementSpan(el: KNode): number {
+  let span = isNode(el.source_) ? spanOf(el.source_) : 1;
+  for (const op of el.options_?.ops ?? []) {
+    if (op.type_ === 'stretch') {
+      const values = amounts(op.arguments_.amount);
+      if (!values.length) continue;
+      if (op.arguments_.type === 'slow') span *= Math.max(0, ...values);
+      else {
+        const positive = values.filter((v) => v > 0);
+        span = positive.length ? span / Math.min(...positive) : 0;
+      }
+    } else if (op.type_ === 'replicate') span /= repsOf(el);
+  }
+  return span;
+}
+
+/** Longest step of a sequence in units of its steps (the element's own span × its weight). */
+const stepsSpan = (seq: KNode): number =>
+  seq.type_ === 'pattern' ? Math.max(0, ...childrenOf(seq).map((el) => (el.type_ === 'element' ? elementSpan(el) : spanOf(el)) * weightOf(el))) : spanOf(seq);
+
+function patternSpan(p: KNode): number {
+  const kids = childrenOf(p);
+  const longest = (xs: number[]) => Math.max(0, ...xs);
+  switch (p.arguments_?.alignment) {
+    case 'stack':
+    case 'rand':
+      return longest(kids.map(spanOf));
+    case 'polymeter_slowcat':
+      return longest(kids.map(stepsSpan));
+    case 'polymeter': {
+      const spc = p.arguments_?.stepsPerCycle;
+      const given = spc ? amounts(spc).filter((v) => v > 0) : [];
+      const first = kids[0];
+      const steps = given.length ? Math.min(...given) : first ? childrenOf(first).reduce((a, k) => a + weightOf(k), 0) || 1 : 1;
+      return longest(kids.map(stepsSpan)) / steps;
+    }
+    case 'feet':
+      return longest(kids.map(spanOf)) / Math.max(1, kids.length);
+    default: {
+      const total = kids.reduce((a, k) => a + weightOf(k), 0);
+      return total > 0 ? stepsSpan(p) / total : 0;
+    }
+  }
 }
 
 /** The number a mini string stands for when it is just one numeric atom ("2"), else null. */
