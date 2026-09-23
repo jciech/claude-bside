@@ -22,7 +22,7 @@ npm run catalog -- --offline    # rebuild from the vendored maps and the cache, 
 Every build checks that every file every map references resolves (a one-byte range request per
 file; about 11,000 files, under a minute), cached per map content, and fails on any broken file: fix
 or drop it in `SOURCES`. It also checks all 869 soundfont presets `gm.mjs` names; variants that don't
-exist are called out in the sound's tags (`n=1 fails`).
+exist are listed in the sound's `failingVariants`, which the checker rejects.
 
 `--measure` renders sounds in batches of 40 with the real pinned `@strudel/*` packages (bundled by
 Vite, run in headless Chromium by `scripts/render-audio.ts`); only new or changed sounds are rendered
@@ -213,20 +213,29 @@ machines from the instrument and the machine's character ("gritty 12-bit" for th
 - **`usage`** is how to write it: `{ s: "bd", bank: "RolandTR909" }`.
 - **`count`** is how many variants `n` selects (bank size for sample arrays, font variants for GM,
   tables for wavetables; 1 for pitch-keyed maps like VCSL instruments, where `n` has no effect).
+  `n` picks variant `round(n) mod count`.
+- **`failingVariants`** lists variants that don't exist upstream and play silence. Upstream
+  `gm.mjs` names three presets that don't exist: `gm_electric_bass_finger` n=1, `gm_slap_bass_2`
+  n=2, `gm_gunshot` n=11 (and every `n` that wraps onto them). The checker rejects them
+  (`sample-index`) and the composer's catalog lists them.
 - **`pitched`**: responds to `note()` with correct pitch (synths, soundfonts, wavetables and
   pitch-keyed sample maps). Plain sample banks are `false` even when their files happen to be notes.
 - **`range`** (GM soundfonts only) is the longest run of MIDI notes between A0 and C8 whose zone in
   font variant 0 exists, decodes and plays (containing C4 when possible). Notes outside either fail
   or never start: a zone that doesn't decode hangs the soundfont loader. Other variants (`n > 0`)
-  may have different ranges. Upstream `gm.mjs` has three broken variant names
-  (`gm_electric_bass_finger` n=1, `gm_slap_bass_2` n=2, `gm_gunshot` n=11) that always fail; their
-  tags say so. Zones that decode to a few milliseconds but loop (single-cycle waves, e.g. the top of
-  `gm_synth_bass_1`, `gm_lead_1_square`, `gm_shanai`, `gm_bagpipe`) were rendered and do play.
-- **`level`** is measured with the offline renderer: one event at gain 1 (`note` C4 for pitched
-  sounds, `n` 0, samples clipped to the event) rendered for 1 s; `rmsDb` is the RMS over that
-  second (so it is energy per event: a one-shot hat reads far lower than a sustained pad),
-  `peakDb` the sample peak, `centroidHz` the spectral centroid (magnitude-weighted, averaged over
-  frames by energy). `null` when not measured.
+  may have different ranges. Zones that decode to a few milliseconds but loop (single-cycle waves,
+  e.g. the top of `gm_synth_bass_1`, `gm_lead_1_square`, `gm_shanai`, `gm_bagpipe`) were rendered
+  and do play.
+- **`level`** is measured with the offline renderer: one event at gain 1 and `n` 0 (`note` C4 for
+  pitched sounds, or the middle of a soundfont's range when C4 is outside it), held for 1 s, with
+  sample files clipped to the event (`clip: 1`). `rmsDb` is the RMS of both channels over the 1 s
+  from onset, so it is energy per event: a one-shot hat reads far lower than a sustained pad, which
+  reads its steady-state level. `peakDb` is the sample peak (no oversampling). `centroidHz` is the
+  spectral centroid of the mid channel: magnitude-weighted within each 2048-point frame, averaged
+  over frames weighted by their energy (frames 60 dB below the loudest are skipped). `null` when not
+  measured or silent. To estimate a part's RMS from it: roughly `rmsDb + 10·log10(onsets per
+  second)` for hits that don't overlap (a sustained sound: `+ 10·log10(fraction of time sounding)`
+  instead), then `+ 20·log10(gain × velocity)`, i.e. −1.9 dB at superdough's default gain of 0.8.
 - **`brightness`** is the measured centroid on a log scale (80 Hz → 0, 12 kHz → 1), or the family
   prior above.
 - **`bytes`** / **`durationSec`** describe the file variant 0 plays (C4's file for pitch-keyed maps;

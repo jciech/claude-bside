@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { failingVariant, variantIndex, type CatalogSound } from '../../src/shared/catalog.ts';
 import { createSoundIndex, parseCatalog, resolvedName } from '../../src/strudel/catalog.ts';
 
 const raw = () => JSON.parse(readFileSync(new URL('../fixtures/catalog.small.json', import.meta.url), 'utf8'));
@@ -20,6 +21,7 @@ describe('parseCatalog', () => {
     ['an alias that collides with an id', (c: any) => (c.sounds.find((s: any) => s.id === 'rolandtr909_bd').aliases = ['bd']), /"bd" belongs to both/],
     ['usage that does not resolve to the id', (c: any) => (c.sounds.find((s: any) => s.id === 'rolandtr909_hh').usage.bank = 'RolandTR808'), /resolves to "rolandtr808_hh"/],
     ['a reversed range', (c: any) => (c.sounds.find((s: any) => s.kind === 'soundfont').range = [90, 20]), /reversed/],
+    ['a failing variant past the count', (c: any) => { const font = c.sounds.find((s: any) => s.kind === 'soundfont'); font.failingVariants = [font.count]; }, /failingVariants of "gm_\w+" must be below its count/],
     ['duplicate map orders', (c: any) => (c.maps[1].order = c.maps[0].order), /orders must be unique/],
   ])('rejects %s', (_label, mutate, message) => {
     const json = raw();
@@ -53,5 +55,17 @@ describe('createSoundIndex', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toContain('gm_epiano1');
     expect(ids).not.toContain('tr909_bd');
+  });
+});
+
+describe('variants', () => {
+  it('picks the variant superdough plays: round(n) mod count, non-numbers as 0', () => {
+    expect([0, 11, 12, 23, -1, 10.6, '11', undefined, 'x'].map((n) => variantIndex(n, 12))).toEqual([0, 11, 0, 11, 11, 11, 11, 0, 0]);
+  });
+
+  it('names the failing variant n selects', () => {
+    const gunshot = { id: 'gm_gunshot', count: 12, failingVariants: [11] } as CatalogSound;
+    expect([11, 23, -1, 10, 0, undefined].map((n) => failingVariant(gunshot, n))).toEqual([11, 11, 11, null, null, null]);
+    expect(failingVariant({ ...gunshot, failingVariants: undefined }, 11)).toBeNull();
   });
 });

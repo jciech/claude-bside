@@ -194,8 +194,8 @@ Tempo is part of the section: `bpm` + `tempoRampBars` + `tempoRampAt` ('start' o
    line/col, excerpt, hint ("Unknown method `.reverb` — did you mean `.room`?").
 3. **Musical rules**: key fit per bar against the (possibly alternating) scale — < 0.6 is an error,
    0.6–0.8 a warning, `chromatic` parts exempt; bass register; onsets per bar ≤ `MAX_PART_ONSETS_PER_BAR`;
-   hap limits; room/delay parameters constant per part; unknown sounds and soundfont ranges; measured
-   spans within ±0.2 of targets (warning).
+   hap limits; room/delay parameters constant per part; unknown sounds, soundfont ranges and variants
+   that don't exist (`failingVariants`); measured spans within ±0.2 of targets (warning).
 4. **Novelty and dramaturgy** (§9) — relaxed for the scripted driver (warnings only).
 5. **Placement and compile** under the lock: `startCycle` on the next 4-bar line after the locked
    horizon whose lock point is still ahead; `originCycle`/`continues` for carried parts; orbits

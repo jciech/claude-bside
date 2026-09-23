@@ -117,6 +117,25 @@ describe('per-part rules', () => {
     expect(low.parts[0]!.errors[0]!.message).toMatch(/gm_acoustic_bass can only play A0–Eb5; C7/);
   });
 
+  it('rejects soundfont variants that play silence, however n is written', () => {
+    const palette = createSoundIndex(parseCatalog(JSON.parse(readFileSync(new URL('../../palette/catalog.json', import.meta.url), 'utf8'))));
+    const fx = (code: string) => runCheck({ parts: [part('fx', code, { role: 'texture' })], bpm: 120, scale: null, bars: 4 }, { index: palette }).parts[0]!;
+    for (const code of ['s("gm_gunshot").n(11)', 's("gm_gunshot:11")', 'n(11).s("gm_gunshot")', 's("gm_gunshot:<3 11>")']) {
+      expect(fx(code).errors, code).toEqual([
+        expect.objectContaining({
+          rule: 'sample-index',
+          message: expect.stringMatching(/^"gm_gunshot" variant n=11 does not exist upstream, so it plays silence \(first in bar [01]\)\.$/),
+          hint: 'Use n values 0–11 except 11.',
+        }),
+      ]);
+    }
+    expect(fx('s("gm_gunshot").n(23)').errors[0]!.message).toBe('"gm_gunshot" n=23 (variant 11 of 12) does not exist upstream, so it plays silence (first in bar 0).');
+    expect(fx('note("c2 e2").s("gm_electric_bass_finger:1")').errors.map((e) => e.rule)).toEqual(['sample-index']);
+    for (const code of ['s("gm_gunshot").n(10)', 's("gm_gunshot:10")', 's("gm_gunshot")', 'note("c2").s("gm_electric_bass_finger:2")']) {
+      expect(fx(code).ok, code).toBe(true);
+    }
+  });
+
   it('turns HAP_LIMITS violations into errors', () => {
     const c = check([part('x', 's("bd").gain("<1 3>").velocity(2)')]);
     expect(c.parts[0]!.errors.map((e) => e.message).sort()).toEqual([
