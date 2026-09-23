@@ -3,15 +3,16 @@
 // `compose` is the autopilot acting as the room's composer, committing through the same tools as
 // everyone else and trying its next candidate when a plan is rejected.
 import { createHash } from 'node:crypto';
-import type { Issue } from '../../shared/analysis.ts';
+import type { Issue, SectionCheck } from '../../shared/analysis.ts';
 import type { Catalog } from '../../shared/catalog.ts';
 import type { PlanRequest, TurnContext } from '../../shared/composer-api.ts';
 import type { Knob, Plan } from '../../shared/plan.ts';
 import { vampLoopFor } from '../../shared/schedule.ts';
-import type { CheckPartInput, ComposeOutcome, ComposerTools, Checker, Logger, ScriptedComposer } from '../types.ts';
+import type { CheckPartInput, CheckSectionInput, ComposeOutcome, ComposerTools, Checker, Logger, ScriptedComposer } from '../types.ts';
 import { planCandidates, type AutopilotLibrary } from './autopilot.ts';
 import { LIBRARY, type Ensemble } from './library/index.ts';
 import { fillScale, scaleOf } from './library/scale.ts';
+import { partVariants, type Variant } from './variants.ts';
 
 export interface ScriptedOptions {
   catalog: Catalog;
@@ -28,9 +29,15 @@ export interface ScriptedOptions {
 
 const VALIDATION_CONCURRENCY = 4;
 const MAX_COMPOSE_ATTEMPTS = 3;
+const BOOT_CHECK_ATTEMPTS = 3;
+/** A check that failed for the checker's own reasons (load, a crashed worker), not the code's. */
+const INCONCLUSIVE_RULES: ReadonlySet<string> = new Set(['timeout', 'busy', 'internal']);
+const inconclusive = (check: SectionCheck) => check.errors.some((e) => INCONCLUSIVE_RULES.has(e.rule));
 const WIDE_MODES = /pentatonic|pelog|hirajoshi|in-sen|iwato|kumoi/;
 
-const codeKey = (code: string, knobs: readonly Knob[]) => createHash('sha1').update(`${code}\u0000${JSON.stringify(knobs)}`).digest('hex');
+// Knob defaults move per section and stay inside the declared range, so a verdict holds for any of them.
+const codeKey = (code: string, knobs: readonly Knob[]) =>
+  createHash('sha1').update(`${code}\u0000${JSON.stringify(knobs.map((k) => [k.name, k.min, k.max, k.follows]))}`).digest('hex');
 
 /**
  * Two keys cover an ensemble's register: tonic C in its main mode (lowest notes) and tonic B in its
@@ -70,25 +77,45 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T
   return out;
 }
 
-export async function createScriptedComposer(opts: ScriptedOptions): Promise<ScriptedComposer> {
+export interface ValidatedLibrary {
+  lib: AutopilotLibrary;
+  /** Part code (+ knob ranges) → passed the checker. */
+  verdicts: Map<string, boolean>;
+}
+
+/**
+ * Checks every ensemble in its two validation keys, and every code variant of its parts, with the
+ * real checker; ensembles that fail are dropped, variants that fail are never played.
+ */
+export async function validateLibrary(opts: ScriptedOptions): Promise<ValidatedLibrary> {
   const { checker, log, catalog } = opts;
   const synthOnly = opts.synthOnly ?? process.env.BSIDE_AUTOPILOT === 'synth';
   const kinds = new Map(catalog.sounds.map((s) => [s.id, s.kind]));
-  /** Part code (+ knobs) → passed the checker. */
   const verdicts = new Map<string, boolean>();
 
-  const validate = async (ens: Ensemble): Promise<{ ens: Ensemble; sounds: string[] } | null> => {
+  /** A boot check, tried again while the checker (not the code) is what failed. */
+  const bootCheck = async (input: CheckSectionInput): Promise<SectionCheck> => {
+    let check = await checker.checkSection(input, { priority: 'audition' });
+    for (let attempt = 1; attempt < BOOT_CHECK_ATTEMPTS && inconclusive(check); attempt++) {
+      await new Promise((r) => setTimeout(r, 250 * attempt));
+      check = await checker.checkSection(input, { priority: 'audition' });
+    }
+    return check;
+  };
+
+  const validate = async (ens: Ensemble): Promise<{ ens: Ensemble; sounds: string[]; variants: Map<string, Variant[]> } | null> => {
     const sounds = new Set<string>();
-    for (const scale of validationScales(ens)) {
+    const scales = validationScales(ens);
+    for (const scale of scales) {
       const parts = partsFor(ens, scale);
       let check;
       try {
-        check = await checker.checkSection({ parts, bpm: ens.bpm.default, scale, bars: 16, vampLoopBars: vampLoopFor(16) }, { priority: 'audition' });
+        check = await bootCheck({ parts, bpm: ens.bpm.default, scale, bars: 16, vampLoopBars: vampLoopFor(16) });
       } catch (e) {
         log.warn('scripted: ensemble could not be checked', { ensemble: ens.id, error: (e as Error).message });
         return null;
       }
-      check.parts.forEach((p, i) => verdicts.set(codeKey(parts[i]!.code, parts[i]!.knobs), p.ok));
+      if (!inconclusive(check)) check.parts.forEach((p, i) => verdicts.set(codeKey(parts[i]!.code, parts[i]!.knobs), p.ok));
       if (!check.ok) {
         log.warn('scripted: ensemble dropped', { ensemble: ens.id, scale, issues: describe([...check.errors, ...check.parts.flatMap((p) => p.errors)]) });
         return null;
@@ -96,7 +123,46 @@ export async function createScriptedComposer(opts: ScriptedOptions): Promise<Scr
       for (const p of check.parts) for (const s of p.analysis?.sounds ?? []) if (s.share > 0 || s.onsets > 0) sounds.add(s.id);
     }
     if (synthOnly && [...sounds].some((id) => kinds.get(id) !== 'synth')) return null;
-    return { ens, sounds: [...sounds] };
+    return { ens, sounds: [...sounds], variants: await validateVariants(ens, scales) };
+  };
+
+  /**
+   * Which code variants each part may play: those that pass on their own in both validation keys.
+   * All variants of an ensemble are checked together; only part-level findings count (they never
+   * play together, so the mix limits don't apply).
+   */
+  const validateVariants = async (ens: Ensemble, scales: string[]): Promise<Map<string, Variant[]>> => {
+    const candidates = ens.parts.flatMap((p) => partVariants(p).filter((v) => v.variant !== 'base').map((v) => ({ part: p, ...v })));
+    const passed = new Map<string, Set<Variant>>(ens.parts.map((p) => [p.id, new Set(candidates.filter((c) => c.part.id === p.id).map((c) => c.variant))]));
+    for (const scale of scales) {
+      if (!candidates.length) break;
+      const parts: CheckPartInput[] = candidates.map((c, i) => ({
+        id: `v${i}`,
+        role: c.part.role,
+        code: fillScale(c.code, scale),
+        knobs: c.part.knobs ?? [],
+        chromatic: false,
+        level: c.part.level,
+        enterBar: 0,
+        exitBar: null,
+        patternBarAtStart: 0,
+      }));
+      let check: SectionCheck | null = null;
+      try {
+        check = await bootCheck({ parts, bpm: ens.bpm.default, scale, bars: 16, vampLoopBars: vampLoopFor(16) });
+      } catch (e) {
+        log.warn('scripted: variants could not be checked', { ensemble: ens.id, error: (e as Error).message });
+      }
+      // Unchecked variants are simply not played; only real verdicts are remembered.
+      const settled = check !== null && !inconclusive(check);
+      if (check && !settled) log.warn('scripted: variants could not be checked', { ensemble: ens.id, issues: describe(check.errors) });
+      parts.forEach((part, i) => {
+        const ok = settled && check!.parts[i]!.ok;
+        if (settled) verdicts.set(codeKey(part.code, part.knobs), ok);
+        if (!ok) passed.get(candidates[i]!.part.id)!.delete(candidates[i]!.variant);
+      });
+    }
+    return new Map([...passed].map(([id, set]) => [id, ['base' as Variant, ...set]]));
   };
 
   const started = Date.now();
@@ -106,15 +172,27 @@ export async function createScriptedComposer(opts: ScriptedOptions): Promise<Scr
   const lib: AutopilotLibrary = {
     ensembles: results.map((r) => r.ens),
     sounds: new Map(results.map((r) => [r.ens.id, r.sounds])),
+    variants: new Map(results.map((r) => [r.ens.id, r.variants])),
   };
   log.info('scripted: library ready', {
     ensembles: lib.ensembles.length,
     of: candidates.length,
     synthOnly,
+    variants: results.reduce((a, r) => a + [...r.variants.values()].reduce((b, v) => b + v.length - 1, 0), 0),
     ms: Date.now() - started,
   });
+  return { lib, verdicts };
+}
 
-  /** Checks a candidate's fresh part code the boot run hasn't seen (another key), caching verdicts. */
+export async function createScriptedComposer(opts: ScriptedOptions): Promise<ScriptedComposer> {
+  const { checker, log } = opts;
+  const { lib, verdicts } = await validateLibrary(opts);
+
+  /**
+   * Checks a candidate's fresh part code the boot run hasn't seen (another key), caching verdicts.
+   * When the checker itself fails (timeout, busy, a crash) nothing is cached and the candidate goes
+   * ahead: the conductor checks every commit anyway.
+   */
   const precheck = async (plan: Plan, signal: AbortSignal): Promise<boolean> => {
     for (const s of plan.sections) {
       const fresh = s.parts.filter((p) => p.code !== null && !verdicts.has(codeKey(p.code, p.knobs)));
@@ -122,7 +200,7 @@ export async function createScriptedComposer(opts: ScriptedOptions): Promise<Scr
       const parts = fresh.map((p) => ({ id: p.id, role: p.role, code: p.code!, knobs: p.knobs, chromatic: p.chromatic, level: p.level, enterBar: 0, exitBar: null, patternBarAtStart: 0 }));
       try {
         const check = await checker.checkSection({ parts, bpm: s.bpm, scale: s.scale, bars: s.bars, vampLoopBars: vampLoopFor(s.bars) }, { priority: 'audition', signal });
-        check.parts.forEach((p, i) => verdicts.set(codeKey(parts[i]!.code, parts[i]!.knobs), p.ok));
+        if (!inconclusive(check)) check.parts.forEach((p, i) => verdicts.set(codeKey(parts[i]!.code, parts[i]!.knobs), p.ok));
       } catch {
         return !signal.aborted;
       }

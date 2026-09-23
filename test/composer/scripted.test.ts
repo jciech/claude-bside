@@ -3,7 +3,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createChecker } from '../../src/server/check/checker.ts';
 import { planCandidates, recognize } from '../../src/server/composer/autopilot.ts';
+import { carrySection } from '../../src/server/composer/carry.ts';
 import { LIBRARY } from '../../src/server/composer/library/index.ts';
+import { resolvedIssues } from '../../src/server/conductor/accept.ts';
+import { resolveSection } from '../../src/server/conductor/compile.ts';
+import type { SectionCheck } from '../../src/shared/analysis.ts';
 import { createScriptedComposer } from '../../src/server/composer/scripted.ts';
 import type { CommitResult, PlanRequest, SectionSummary, TurnContext } from '../../src/shared/composer-api.ts';
 import { PERCUSSIVE_ROLES } from '../../src/shared/music.ts';
@@ -11,6 +15,8 @@ import { PlanSchema, type Plan } from '../../src/shared/plan.ts';
 import { isPublicText } from '../../src/shared/text.ts';
 import type { Checker, ComposerTools, ScriptedComposer } from '../../src/server/types.ts';
 import { fullCatalog, memoryLog, movementOf, smallCatalog, summarize, turnContext } from './fixtures.ts';
+
+const halfOrDouble = (a: number, b: number) => [2, 0.5].some((r) => Math.abs(a / b - r) <= 0.03 * r);
 
 /** The rules the conductor applies to plan shape (and the tempo rules), restated independently. */
 function problems(plan: Plan, tail: SectionSummary | null, movementBpm: number | null): string[] {
@@ -33,8 +39,10 @@ function problems(plan: Plan, tail: SectionSummary | null, movementBpm: number |
     const centre = opens || (plan.movement && i > plan.movement.startsAtSection) ? plan.movement!.bpm : movementBpm;
     if (centre !== null && Math.abs(s.bpm - centre) > 4) out.push(`${at}: bpm ${s.bpm} far from movement ${centre}`);
     const beatless = !s.parts.some((p) => PERCUSSIVE_ROLES.has(p.role));
-    if (prevBpm !== null && Math.abs(s.bpm - prevBpm) > 2 && s.tempoRampBars < Math.abs(s.bpm - prevBpm) && !beatless) out.push(`${at}: needs a ramp`);
-    if (opens && movementBpm !== null && Math.abs(plan.movement!.bpm - movementBpm) > 12 && !beatless) out.push(`${at}: movement jump without a beatless bridge`);
+    if (prevBpm !== null && Math.abs(s.bpm - prevBpm) > 2 && s.tempoRampBars < Math.abs(s.bpm - prevBpm) && !beatless && !halfOrDouble(s.bpm, prevBpm)) out.push(`${at}: needs a ramp`);
+    if (opens && movementBpm !== null && Math.abs(plan.movement!.bpm - movementBpm) > 12 && !beatless && !halfOrDouble(plan.movement!.bpm, movementBpm)) {
+      out.push(`${at}: movement jump without a beatless bridge`);
+    }
     for (const [j, p] of s.parts.entries()) {
       const pp = `${at}.parts[${j}] ${p.id}`;
       if (p.code === null && !prevParts.has(p.id)) out.push(`${pp}: carries a part that is not in the previous section`);
@@ -48,7 +56,11 @@ function problems(plan: Plan, tail: SectionSummary | null, movementBpm: number |
         const spans = lanes.get(a.target) ?? [];
         if (spans.some(([f, t]) => a.fromBar < t && f < a.toBar)) out.push(`${pp}: overlapping lanes on ${a.target}`);
         lanes.set(a.target, [...spans, [a.fromBar, a.toBar]]);
+        const knob = p.knobs.find((k) => `knob:${k.name}` === a.target);
+        if (a.target.startsWith('knob:') && p.knobs.length && !knob) out.push(`${pp}: lane on an undeclared ${a.target}`);
+        if (knob && [a.from, a.to].some((v) => v < knob.min || v > knob.max)) out.push(`${pp}: ${a.target} lane leaves ${knob.min}–${knob.max}`);
       }
+      for (const k of p.knobs) if (!(k.min <= k.default && k.default <= k.max)) out.push(`${pp}: knob ${k.name} default out of range`);
       for (const t of p.duck?.targets ?? []) if (!ids.includes(t) || t === p.id) out.push(`${pp}: duck target ${t}`);
     }
     prevBpm = s.bpm;
@@ -103,23 +115,32 @@ describe('the scripted autopilot', () => {
     for (const id of carried) expect(intro.parts.find((p) => p.id === id)?.exitBar).toBeNull();
     // Chain a whole movement: each plan continues the one before, following the expected roles.
     let prev = summarize(next.sections[0]!, 'ep1-0002', intro.startCycle + intro.bars, intro);
-    for (const [i, role] of (['build', 'drop', 'breakdown', 'groove', 'outro'] as const).entries()) {
+    for (const [i, role] of (['build', 'drop', 'breakdown', 'groove'] as const).entries()) {
       const plan = fallback(turnContext({ now: prev, movement, expected: [role], id: `ep1-r${i + 2}` }));
       expect(plan.sections[0]!.role).toBe(role);
       prev = summarize(plan.sections[0]!, `ep1-000${i + 3}`, prev.startCycle + prev.bars, prev);
     }
+    // An outro only closes a side old enough to be replaced (6 minutes when the next one opens).
+    const young = fallback(turnContext({ now: prev, movement, expected: ['outro'], id: 'ep1-r7' }));
+    expect(young.sections[0]!.role).not.toBe('outro');
+    const old = fallback(turnContext({ now: prev, movement: { ...movement, ageMin: 7 }, expected: ['outro'], id: 'ep1-r7' }));
+    expect(old.sections[0]!.role).toBe('outro');
   });
 
-  it('builds really build: knobs open, the beat steps out for the last bar, a drop follows with a pre-roll', () => {
-    const house = LIBRARY.find((e) => e.id === 'synth-house')!;
+  it('builds really build: stripped back, layers entering, knobs opening; the drop brings kick and bass back after a pre-roll', () => {
+    const house = LIBRARY.find((e) => e.id === 'deep-house')!;
     const groove = planCandidates({ ensembles: [house], sounds: new Map() }, turnContext({ kind: 'movement', id: 'x' }), 'fallback')[0]!.plan.sections[0]!;
     const now = summarize(groove, 'a-1', 4);
     const movement = movementOf('Test', groove.bpm, groove.scale);
     const build = fallback(turnContext({ now, movement, expected: ['build'] })).sections[0]!;
     expect(build.role).toBe('build');
-    expect(build.parts.find((p) => p.id === 'kick')?.exitBar).toBe(build.bars - 1);
-    const bass = build.parts.find((p) => p.id === 'bass')!;
-    expect(bass.automation.some((a) => a.target === 'knob:cut' && a.to === 2400)).toBe(true);
+    const ids = build.parts.map((p) => p.id);
+    expect(ids).not.toContain('kick');
+    expect(ids).not.toContain('bass');
+    expect(build.parts.filter((p) => p.enterBar > 0).length).toBeGreaterThanOrEqual(2);
+    const keys = build.parts.find((p) => p.id === 'keys')!;
+    expect(keys.automation.some((a) => a.target === 'knob:cut' && a.fromBar === 0 && a.toBar === build.bars && a.to === 6000)).toBe(true);
+    expect(keys.automation.some((a) => a.target === 'level' && a.to > a.from)).toBe(true);
     const riser = build.parts.find((p) => p.id === 'riser')!;
     expect(riser).toMatchObject({ role: 'texture', enterBar: 0 });
     expect(riser.code).toContain(`.slow(${build.bars})`);
@@ -127,6 +148,9 @@ describe('the scripted autopilot', () => {
     const drop = fallback(turnContext({ now: summarize(build, 'a-2', 20, now), movement, expected: ['drop'] })).sections[0]!;
     expect(drop.role).toBe('drop');
     expect(drop.parts.map((p) => p.id)).not.toContain('riser');
+    expect(drop.parts.map((p) => p.id)).toEqual(expect.arrayContaining(['kick', 'bass']));
+    // Everything restarts on the downbeat, so the breath or riser before it is heard on every part.
+    expect(drop.parts.every((p) => p.code !== null || p.restart)).toBe(true);
     expect(['breath', 'riser']).toContain(drop.transitionIn.type);
   });
 
@@ -156,6 +180,17 @@ describe('the scripted autopilot', () => {
         'ep1-0009',
         100,
       );
+
+    it('keeps carried knob drift inside a range that ends on a third decimal (0.125–0.875)', () => {
+      const tail = foreign(120, 'C:minor');
+      const echo = { name: 'echo', default: 0.875, min: 0.125, max: 0.875, follows: '-intensity' as const };
+      const withEcho: SectionSummary = { ...tail, parts: tail.parts.map((p) => (p.id === 'keys' ? { ...p, knobs: [echo], knobValuesAtEnd: { echo: 0.875 } } : p)) };
+      const section = carrySection(withEcho, 0, 32);
+      expect(section.parts.find((p) => p.id === 'keys')!.automation.filter((a) => a.target === 'knob:echo')).toHaveLength(2);
+      const resolved = resolveSection(section, { name: tail.name, parts: withEcho.parts }, 'sections[0]');
+      expect(resolved.errors).toEqual([]);
+      expect(resolvedIssues(section, resolved.parts, 'sections[0]', tail.bars)).toEqual([]);
+    });
 
     it('carry-vamps the tail: every part continues, one steps out for eight bars and comes back', () => {
       const tail = foreign(120, 'C:minor');
@@ -309,6 +344,69 @@ describe('the scripted autopilot', () => {
     expect(first!.opens?.id).toBe('gamelan');
     expect(first!.plan.requestDecisions).toContainEqual(expect.objectContaining({ requestId: 'q9', decision: 'this-plan' }));
   });
+});
+
+describe('when the checker itself fails (timeout, busy, a crashed worker)', () => {
+  let real: Checker;
+  afterAll(() => real?.close());
+
+  /** What the checker returns for a whole-job failure: every part not ok, no analysis. */
+  const timedOut = (input: Parameters<Checker['checkSection']>[0]): SectionCheck => ({
+    ok: false,
+    errors: [{ severity: 'error', rule: 'timeout', message: 'Checking the section took too long.' }],
+    warnings: [],
+    parts: input.parts.map((p) => ({ id: p.id, ok: false, errors: [], warnings: [], analysis: null, timings: { validateMs: 0, evaluateMs: 0, analyzeMs: 0 }, digest: null, instrument: '' })),
+    mix: null,
+    fingerprint: null,
+  });
+
+  it('retries at boot, lets compose go ahead, and never remembers the failure as a verdict on the code', async () => {
+    real = createChecker({ catalog: fullCatalog, poolSize: 2 });
+    let failures = 1;
+    let calls = 0;
+    const flaky: Checker = {
+      async checkSection(input, opts) {
+        calls++;
+        if (failures !== 0) {
+          failures--;
+          return timedOut(input);
+        }
+        return real.checkSection(input, opts);
+      },
+      audition: (input, opts) => real.audition(input, opts),
+      close: () => real.close(),
+    };
+    const log = memoryLog();
+    const scripted = await createScriptedComposer({ catalog: fullCatalog, checker: flaky, log, library: LIBRARY.filter((e) => e.id === 'glass-drift') });
+    // The first boot check timed out; the retry kept the ensemble.
+    expect(log.lines.find((l) => l.msg === 'scripted: library ready')?.data).toMatchObject({ ensembles: 1 });
+
+    // A key the boot run never checked, while every check times out: the candidate still commits.
+    const boot = scripted.fallbackPlan(turnContext({ kind: 'movement', id: 'flaky-boot' }));
+    const now = summarize(boot.sections[0]!, 'flaky-1', 4);
+    const movement = movementOf('Glass', boot.sections[0]!.bpm, 'D:minor');
+    const commits: Plan[] = [];
+    const tools = (request: PlanRequest): ComposerTools => ({
+      request,
+      audition: async () => ({ ok: true, errors: [], warnings: [], parts: [], mix: null, descriptors: null }),
+      commit: async (plan) => {
+        commits.push(plan);
+        return { accepted: true, errors: [], warnings: [], sections: [{ id: 's', name: 'n', startCycle: 8, bars: 16 }] };
+      },
+    });
+    const request = (id: string): PlanRequest => {
+      const context = turnContext({ now, movement, expected: ['groove'], id });
+      return { id, kind: 'section', createdAt: 0, softDeadlineMs: 0, hardDeadlineMs: 0, targetCycle: 8, scheduleRev: 1, context };
+    };
+    failures = -1;
+    expect(await scripted.compose(request('flaky-r1'), tools(request('flaky-r1')), new AbortController().signal)).toMatchObject({ status: 'committed', attempts: 1 });
+    expect(commits[0]!.sections[0]!.scale).toBe('D:minor');
+    // Checks work again: the same fresh code is checked for real (nothing was cached from the timeout).
+    failures = 0;
+    const before = calls;
+    expect(await scripted.compose(request('flaky-r1'), tools(request('flaky-r1')), new AbortController().signal)).toMatchObject({ status: 'committed', attempts: 1 });
+    expect(calls).toBeGreaterThan(before);
+  }, 60_000);
 });
 
 describe('with the small fixture catalog (offline)', () => {

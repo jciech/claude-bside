@@ -291,11 +291,25 @@ the configured driver.
 
 After a handoff, its first plans are a **carry-vamp**: every current part carried, with deterministic
 arrangement moves (drop one part and bring it back every 8 bars, knob and level automation, a
-breakdown every third section). Its library sections are key- and tempo-agnostic (scale degrees with
-a `$SCALE` placeholder filled with the movement's scale; bpm ranges), tagged by groove and role, and
-validated once at boot (results cached by code hash). Scripted commits obey safety, tempo and lead
-rules; novelty and dramaturgy violations are warnings, and its ledger rows don't count toward
-cooldown or similarity. It may open its own side when the current movement doesn't fit its library.
+breakdown every third section). Its library is a set of **ensembles**: layered parts (beat, back,
+pulse, low, harmony, hook, colour) that are key- and tempo-agnostic (scale degrees with a `$SCALE`
+placeholder filled with the movement's scale; bpm ranges), each with code **variants** (register up
+or down, thinned, half speed, rotated), all validated once at boot (results cached by code hash; a
+variant that fails is never played). The arranger (`arrange.ts`) realises each role from **recipes**
+of moves per layer — which layers play, entries and exits, faders and level lanes, knob rests and
+sweeps, the variant, the transition — so roles contrast audibly even without drums: intros start
+sparse and swell, builds strip back and layer up under a riser while kick and bass wait, drops
+restart everything after a breath or riser, breakdowns and interludes drop drums and bass and pull the
+harmony down, bridges leave the key. Every side has a home key and **away keys** (the relative mode
+on the same notes, or another mode on the tonic); a role is stated at home first, and each time it
+returns it takes the next recipe, so no two sections of a side are arranged alike. A side runs **8–9
+minutes of music** (its form is cut to that length, and an outro is only written once the plan that
+opens the next side will come after the conductor's 6-minute minimum); the next side follows a tour
+through the library in which neighbours never share a groove family, skipping recent ensembles,
+with a legal tempo move (≤ 12 BPM with a ramp, exact half or double time, or a beatless intro) and a
+related key. Scripted commits obey safety, tempo and lead rules; novelty and dramaturgy violations are
+warnings, and its ledger rows don't count toward cooldown or similarity. It may open its own side
+when the current movement doesn't fit its library.
 
 ### 7.5 The external driver and CLI
 
@@ -562,8 +576,8 @@ src/
     check/           checker.ts (worker pool), worker.ts, run.ts, vm-evaluator.ts, audition.ts
     conductor/       conductor.ts, accept.ts, compile.ts, context.ts (buildTurnContext), placement.ts,
                      keep.ts (Stay / Move on), arc.ts, mixer.ts, knobs.ts, ledger.ts, store.ts
-    composer/        claude.ts, external.ts, scripted.ts (+ autopilot, arrange, carry, wishes),
-                     reference.ts, prompt/ (brief, reference card, catalog digest), library/
+    composer/        claude.ts, external.ts, scripted.ts (+ autopilot, arrange, variants, carry,
+                     wishes), reference.ts, prompt/ (brief, reference card, catalog digest), library/
   client/
     index.html main.ts
     engine/          engine.ts, boot.ts, sounds.ts, preload.ts, fetch.ts, scheduler.ts, timers.ts,

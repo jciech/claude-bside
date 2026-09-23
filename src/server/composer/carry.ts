@@ -5,6 +5,7 @@
 import type { SectionSummary } from '../../shared/composer-api.ts';
 import { PERCUSSIVE_ROLES, type PartRole, type SectionLength } from '../../shared/music.ts';
 import type { Automation, PartPlan, Plan, SectionPlan } from '../../shared/plan.ts';
+import { knobValue } from './arrange.ts';
 
 const GROOVE_NAMES = ['Holding Pattern', 'Same River', 'Circling', 'Long Exposure', 'Afterimage', 'The Band Plays On', 'Still Moving', 'Undertow'];
 const BREAKDOWN_NAMES = ['Clearing', 'Open Water', 'Undercurrent', 'Low Tide'];
@@ -62,14 +63,14 @@ function stepOuts(parts: readonly TailPart[], run: number, bars: number): Map<st
 function knobDrift(p: TailPart, bars: number): Automation[] {
   const k = p.knobs[0];
   if (!k) return [];
-  const from = Math.min(k.max, Math.max(k.min, p.knobValuesAtEnd[k.name] ?? k.default));
+  const from = knobValue(k, p.knobValuesAtEnd[k.name] ?? k.default);
   const far = from - k.min > k.max - from ? k.min : k.max;
-  const to = round2(from + (far - from) * 0.5);
-  if (to === round2(from)) return [];
+  const to = knobValue(k, from + (far - from) * 0.5);
+  if (to === from) return [];
   const half = Math.floor(bars / 2);
   return [
-    { target: `knob:${k.name}`, fromBar: 0, toBar: half, from: round2(from), to, curve: 'linear' },
-    { target: `knob:${k.name}`, fromBar: half, toBar: bars, from: to, to: round2(from), curve: 'linear' },
+    { target: `knob:${k.name}`, fromBar: 0, toBar: half, from, to, curve: 'linear' },
+    { target: `knob:${k.name}`, fromBar: half, toBar: bars, from: to, to: from, curve: 'linear' },
   ];
 }
 
