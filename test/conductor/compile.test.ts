@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import type { SectionCheck } from '../../src/shared/analysis.ts';
 import { PlanSchema } from '../../src/shared/plan.ts';
 import type { RoomSnapshot } from '../../src/shared/protocol.ts';
-import type { SectionProgram } from '../../src/shared/program.ts';
+import { EMPTY_MIXER, type SectionProgram } from '../../src/shared/program.ts';
+import { GRID_BARS } from '../../src/client/engine/channels.ts';
+import { channelGainAt } from '../../src/client/engine/envelope.ts';
+import { buildScore } from '../../src/client/engine/score.ts';
 import {
   assignOrbits,
   balanceTrims,
@@ -40,7 +43,8 @@ describe('carried parts', () => {
     const byId = Object.fromEntries(parts.map((p) => [p.id, p]));
     expect(byId.bass).toMatchObject({ code: first.parts[2]!.code, knobs: first.parts[2]!.knobs, carried: true, continues: true });
     expect(byId.kick).toMatchObject({ carried: true, continues: false });
-    expect(byId.pad).toMatchObject({ carried: true, continues: false }); // identical code restated = restart
+    // Identical code written out is a new instance that declares its own knob values.
+    expect(byId.pad).toMatchObject({ carried: false, continues: false });
     expect(byId.lead).toMatchObject({ carried: false, continues: false });
   });
 
@@ -199,6 +203,23 @@ describe('compileSection', () => {
     expect(balanceTrims([{ id: 'pad', role: 'pad', level: 1 }], [check(-40)])).toEqual({ pad: 3 });
   });
 
+  it('a continuing part keeps its predecessor\'s trim, so its level never steps at the boundary', async () => {
+    const bassBefore = first.parts.find((p) => p.id === 'bass')!;
+    const prev = { ...first, parts: first.parts.map((p) => (p.id === 'bass' || p.id === 'kick' ? { ...p, trimDb: 2.5 } : p)) };
+    const plan = section({ parts: [part('bass', { code: null, level: bassBefore.level }), part('kick', { code: null, restart: true })] });
+    const { parts } = resolveSection(plan, prev, 's');
+    const measured = await checkOf(checkInputFor(plan, parts, continuingPatternBars(parts, prev, 16)));
+    // Both now measure far below their role's target: a fresh instance is trimmed up (+3 dB at most).
+    const check = { ...measured, parts: measured.parts.map((c) => ({ ...c, analysis: { ...c.analysis!, loudness: { ...c.analysis!.loudness, estRmsDb: -40 } } })) };
+    const program = compileSection({ id: 'x', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 16, plan, parts, provisional: false, prev, check });
+    const byId = Object.fromEntries(program.parts.map((p) => [p.id, p]));
+    expect(byId.bass).toMatchObject({ continues: true, trimDb: 2.5 });
+    expect(byId.kick).toMatchObject({ continues: false, trimDb: 3 });
+    const channel = buildScore([prev, program], new Map()).byOrbit.get(byId.bass!.orbit)!;
+    const gain = (c: number) => channelGainAt(channel, c, EMPTY_MIXER);
+    expect(gain(16)).toBeCloseTo(gain(16 - GRID_BARS), 9);
+  });
+
   it('the carry plan is a valid plan that continues every sounding part', () => {
     const p = carryPlan(second);
     expect(PlanSchema.safeParse(p).success).toBe(true);
@@ -228,6 +249,15 @@ describe('carried knob values (the program holds them, not client history)', () 
     expect(narrow.parts[0]!.knobs.map((k) => k.default)).toEqual([2000, 3]);
     const rewritten = carriedFrom(s0, 's1', 16, { carried: false, continues: false });
     expect(rewritten.parts[0]!.knobs[0]!.default).toBe(400);
+  });
+
+  it('only for parts carried with code null: identical code written out keeps its declared value', async () => {
+    const plan = section({ parts: [part('pad', { role: 'pad', code: s0.parts[0]!.code, knobs: [{ ...cut, default: 1000 }] })] });
+    const { parts } = resolveSection(plan, s0, 's');
+    const input = checkInputFor(plan, parts, continuingPatternBars(parts, s0, 16));
+    const program = compileSection({ id: 's1', index: 2, track: 2, movementId: 'm', author: 'scripted', startCycle: 16, plan, parts, provisional: false, prev: s0, check: await checkOf(input) });
+    expect(program.parts[0]).toMatchObject({ carried: false, knobs: [{ ...cut, default: 1000 }] });
+    expect(input.parts[0]!.knobs).toEqual(program.parts[0]!.knobs);
   });
 
   it('follow the predecessor when a Stay or a late start changes where it ends', () => {

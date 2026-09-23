@@ -591,6 +591,68 @@ describe('restart', () => {
     expect(again.broadcaster.of('note').find((n) => n.kind === 'movement')).toMatchObject({ text: 'Later Side: A slow tide.' });
   });
 
+  /** A room that played a swept pad into a section carrying it (a continuing kick, fresh hats fading in), then stopped. */
+  async function playedCarried() {
+    const store = createMemoryStore();
+    const wall = { now: 1_700_000_000_000 };
+    const room = createRoom({ store, wall, config: { driver: 'external' } as never });
+    const cut = { name: 'cut', default: 400, min: 200, max: 4000, follows: 'none' as const };
+    const pad = part('pad', { code: 's("triangle").lpf(knob("cut"))', knobs: [cut], automation: [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 400, to: 4000, curve: 'linear' }] });
+    room.scripted.make = () => plan([section({ name: 'First Light', parts: [part('kick'), pad] })], { movement: movement() });
+    await room.conductor.start();
+    const hats = part('hats', { code: 's("white*8")', level: 0, automation: [{ target: 'level', fromBar: 4, toBar: 12, from: 0, to: 0.8, curve: 'linear' }] });
+    const r = await room.conductor.commit({ plan: plan([section({ name: 'Glass', parts: [part('kick', { code: null }), part('pad', { code: null }), hats] })]) }, 'external');
+    expect(r.accepted).toBe(true);
+    const commitInput = room.checker.calls.at(-1)!;
+    await room.clock.advance(1_000);
+    await room.conductor.stop();
+    const saved = store.readJson<PersistedSession>(STORE_KEYS.session)!;
+    const restart = (session: PersistedSession) => {
+      store.writeJson(STORE_KEYS.session, session);
+      return createRoom({ store, clock: createFakeClock(9_000_000), wall: { now: wall.now + (saved.savedAtServerMs - 1_000_000) + 1000 }, config: { driver: 'external' } as never });
+    };
+    return { saved, commitInput, restart };
+  }
+
+  it('re-checks a restored section with the inputs its commit was checked with', async () => {
+    const { saved, commitInput, restart } = await playedCarried();
+    const again = restart(saved);
+    await again.conductor.start();
+    const glass = again.conductor.snapshot().sections.find((s) => s.name === 'Glass')!;
+    expect(glass).toBeDefined();
+    const restoreInput = again.checker.calls.find((input) => input.parts.some((p) => p.id === 'hats'))!;
+    expect(restoreInput).toEqual(commitInput);
+  });
+
+  it('writes carried knob values into sections saved before programs held them', async () => {
+    const { saved, restart } = await playedCarried();
+    const glass = saved.sections.find((s) => s.name === 'Glass')!;
+    expect(glass.parts.find((p) => p.id === 'pad')!.knobs[0]!.default).toBe(4000);
+    // An older build saved the declared default and left the carried value to its clients.
+    const legacy = structuredClone(saved);
+    legacy.sections.find((s) => s.id === glass.id)!.parts.find((p) => p.id === 'pad')!.knobs[0]!.default = 400;
+    const again = restart(legacy);
+    await again.conductor.start();
+    const restored = again.conductor.snapshot().sections.find((s) => s.id === glass.id)!;
+    expect(restored.parts.find((p) => p.id === 'pad')!.knobs[0]!.default).toBe(4000);
+    expect(restored.rev).toBe(glass.rev + 1);
+    const unchanged = restart(saved);
+    await unchanged.conductor.start();
+    expect(unchanged.conductor.snapshot().sections.find((s) => s.id === glass.id)!.rev).toBe(glass.rev);
+  });
+
+  it('gives a continuing part of a section saved without trims its predecessor\'s trim', async () => {
+    const { saved, restart } = await playedCarried();
+    const legacy = structuredClone(saved);
+    const [boot, glass] = legacy.sections;
+    boot!.parts.find((p) => p.id === 'kick')!.trimDb = 2.5;
+    for (const p of glass!.parts) delete (p as { trimDb?: number }).trimDb;
+    const again = restart(legacy);
+    await again.conductor.start();
+    const restored = again.conductor.snapshot().sections.find((s) => s.id === glass!.id)!;
+    expect(Object.fromEntries(restored.parts.map((p) => [p.id, p.trimDb]))).toEqual({ kick: 2.5, pad: 0, hats: 0 });
+  });
+
   it('drops a restored section that no longer validates (and everything after it)', async () => {
     const { store, wall, saved } = await played();
     const tampered = structuredClone(saved);

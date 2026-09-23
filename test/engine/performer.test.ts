@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { instanceKnobsAt } from '../../src/client/engine/envelope.ts';
 import { Performer, type PlannedHap } from '../../src/client/engine/performer.ts';
 import { buildScore } from '../../src/client/engine/score.ts';
 import type { PartError } from '../../src/client/engine/types.ts';
@@ -190,6 +191,42 @@ describe('performer on the fixture', () => {
     const { performer, score } = setup([s]);
     const [h] = performer.plan(score, 0, 0.5, { cps: 0.5 });
     expect(h!.value).toMatchObject({ gain: 1, room: 1, speed: 4, orbit: 1 });
+  });
+});
+
+describe('a re-issued section (same id, part and code)', () => {
+  const performerFor = () => new Performer({ mixer: () => EMPTY_MIXER, onError: () => {} });
+
+  it('plays the knob default the conductor re-derived (Stay / Move on), like a fresh client and the UI', () => {
+    const knobs = (d: number): Knob[] => [{ name: 'cut', default: d, min: 100, max: 5000, follows: 'none' }];
+    const code = 'note("c3 c3").lpf(knob("cut"))';
+    const rev1 = section({ id: 'c2', startCycle: 16, parts: [part({ id: 'pad', code, originCycle: 16, knobs: knobs(1000), carried: true })] });
+    const rev2 = { ...rev1, rev: 2, parts: [{ ...rev1.parts[0]!, knobs: knobs(3000) }] };
+    const connected = performerFor();
+    const score1 = buildScore([rev1], new Map());
+    connected.prepare([score1]);
+    expect(play(connected, score1, 16, 17).map((h) => h.value.cutoff)).toEqual([1000, 1000]);
+    const score2 = buildScore([rev2], new Map());
+    connected.prepare([score2]);
+    const fresh = performerFor();
+    fresh.prepare([score2]);
+    expect(play(connected, score2, 17, 18).map((h) => h.value.cutoff)).toEqual([3000, 3000]);
+    expect(play(fresh, score2, 17, 18).map((h) => h.value.cutoff)).toEqual([3000, 3000]);
+    expect(instanceKnobsAt(score2.byKey.get('c2:pad')!, 17.5, EMPTY_MIXER)).toEqual({ cut: 3000 });
+  });
+
+  it('plays from the moved origin when a Stay pushes the section later', () => {
+    const code = 'note("<c3 d3 e3 f3 g3 a3 b3 c4 d4 e4>")';
+    const at = (start: number, rev: number) => section({ id: 'c2', rev, startCycle: start, parts: [part({ id: 'p', code, originCycle: start })] });
+    const connected = performerFor();
+    connected.prepare([buildScore([at(16, 1)], new Map())]);
+    const score2 = buildScore([at(24, 2)], new Map());
+    connected.prepare([score2]);
+    const fresh = performerFor();
+    fresh.prepare([score2]);
+    const notes = (p: Performer) => play(p, score2, 24, 26).map((h) => h.value.note);
+    expect(notes(fresh)).toEqual(['c3', 'd3']);
+    expect(notes(connected)).toEqual(['c3', 'd3']);
   });
 });
 

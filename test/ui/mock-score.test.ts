@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MockScore, SIDE_FORM } from '../../src/client/room/mock-score.ts';
 import { buildScore } from '../../src/client/engine/score.ts';
+import { withCarriedKnobs } from '../../src/server/conductor/compile.ts';
 import { validatePart } from '../../src/strudel/validate.ts';
 import { plannedPlayBars } from '../../src/shared/schedule.ts';
 import { snapshot } from '../engine/fixtures.ts';
@@ -35,6 +36,7 @@ describe('mock score', () => {
           expect(before?.code).toBe(part.code);
           expect(part.orbit).toBe(before!.orbit);
           expect(part.originCycle).toBe(before!.originCycle);
+          expect(part.trimDb).toBe(before!.trimDb);
         } else {
           // A fresh or rewritten instance never shares an orbit with anything still ringing out.
           expect(prev.parts.some((p) => p.orbit === part.orbit)).toBe(false);
@@ -42,6 +44,15 @@ describe('mock score', () => {
         }
       }
     }
+  });
+
+  it('carried parts start from the knob values the part before ended on, as the conductor writes them', () => {
+    const s = composed(SIDE_FORM.length + 2).sections;
+    for (let i = 1; i < s.length; i++) expect(withCarriedKnobs(s[i]!, s[i - 1]!), s[i]!.role).toBe(s[i]);
+    // The breakdown brings the drop's bass back at bar 4 where it left it, until its own lane from bar 8.
+    const bass = s[SIDE_FORM.indexOf('breakdown')]!.parts.find((p) => p.id === 'bass')!;
+    expect(bass).toMatchObject({ carried: true, continues: false, enterBar: 4 });
+    expect(bass.knobs[0]!.default).toBe(1200);
   });
 
   it('only uses code the allowlist accepts', () => {

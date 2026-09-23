@@ -80,4 +80,31 @@ describe('with the real checker', () => {
     expect(audibleParts).toBe(3);
     expect(Object.keys(check.fingerprint!.soundShares).sort()).toEqual(['hh', 'sawtooth', 'sbd']);
   }, 30_000);
+
+  it('measures a carried part from where the section before left its knobs, as listeners hear it', async () => {
+    checker ??= createChecker({ catalog, poolSize: 2 });
+    const room = createRoom({ checker, config: { driver: 'external' } as never });
+    const cut = { name: 'cut', default: 300, min: 200, max: 9000, follows: 'brightness' as const };
+    const lead = part('lead', {
+      role: 'lead',
+      code: 'note("d3 f3 a3 c4").s("sawtooth").lpf(knob("cut"))',
+      level: 0.7,
+      knobs: [cut],
+      automation: [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 300, to: 8000, curve: 'exp' }],
+    });
+    room.scripted.make = () => plan([section({ name: 'First Light', role: 'groove', parts: [kick, lead] })], { movement: movement({ name: 'Harbour', blurb: 'Synth-only.' }) });
+    await room.conductor.start();
+    // The lead ended its sweep at 8000 and holds there: nothing brightens.
+    const held = section({
+      name: 'Held',
+      role: 'bridge',
+      parts: [part('kick', { role: 'kick', code: null }), part('lead', { role: 'lead', code: null, automation: [{ target: 'knob:cut', fromBar: 8, toBar: 16, from: 8000, to: 8000, curve: 'exp' }] })],
+    });
+    const r = await room.conductor.commit({ plan: plan([held]) }, 'external');
+    expect(r.errors).toEqual([]);
+    const { measured, parts } = room.conductor.snapshot().sections.at(-1)!;
+    expect(parts.find((p) => p.id === 'lead')!.knobs[0]!.default).toBe(8000);
+    expect(measured.brightness.end - measured.brightness.start).toBeCloseTo(0, 2);
+    expect(measured.tension.end - measured.tension.start).toBeCloseTo(0, 2);
+  }, 30_000);
 });
