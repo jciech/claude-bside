@@ -130,13 +130,16 @@ export class Preloader {
 
   /** Fetches with retries so a transient failure never reaches superdough's permanent caches. */
   private probe(url: string): Promise<void> {
-    let p = this.fetched.get(url);
+    // The URL superdough's loadBuffer fetches (sampler.mjs:88, wavetable.mjs:112): a '#' in a file
+    // name (dirt-samples' "mute/000_FH A#2 SCF.wav") would otherwise start a fragment.
+    const target = url.replace('#', '%23');
+    let p = this.fetched.get(target);
     if (!p) {
-      p = fetchWithRetry(url)
+      p = fetchWithRetry(target)
         .then((r) => r.arrayBuffer())
         .then(() => undefined);
-      p.catch(() => this.fetched.delete(url));
-      this.fetched.set(url, p);
+      p.catch(() => this.fetched.delete(target));
+      this.fetched.set(target, p);
     }
     return p;
   }

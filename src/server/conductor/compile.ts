@@ -1,15 +1,15 @@
 // From an accepted SectionPlan to the SectionProgram every client renders (ARCHITECTURE §5–6):
 // carried parts resolved against the previous instance, pattern origins that make continuing parts
-// carry on exactly where they were, orbits per instance, sidechain targets as orbits, the vamp rule,
-// measured spans from the checker, and balance trims toward role loudness targets.
+// carry on exactly where they were, carried knob values, orbits per instance, sidechain targets as
+// orbits, the vamp rule, measured spans from the checker, and balance trims toward role loudness targets.
 import type { Issue, PartCheck, SectionCheck } from '../../shared/analysis.ts';
 import type { Automation, Knob, Plan, SectionPlan } from '../../shared/plan.ts';
 import type { PartRole, SectionRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
 import type { CheckSectionInput } from '../types.ts';
 import { vampLoopFor } from '../../shared/schedule.ts';
-import { levelAt } from './knobs.ts';
-import { patternBarAt } from './placement.ts';
+import { lanesFor, laneValue, levelAt } from './knobs.ts';
+import { patternBarAt, scoreEndAt } from './placement.ts';
 
 export const ORBITS = 24;
 const NO_VAMP: ReadonlySet<SectionRole> = new Set(['build', 'transition', 'intro', 'outro']);
@@ -173,6 +173,31 @@ export function balanceTrims(parts: readonly { id: string; role: PartRole; level
   return trims;
 }
 
+/**
+ * A carried part starts from the knob values its predecessor's same-id part ended on. They are
+ * written into the carried part's knob defaults, so a program never depends on earlier sections a
+ * client may no longer hold. Re-derive whenever the predecessor's extent or score time changes.
+ */
+export function withCarriedKnobs(next: SectionProgram, prev: SectionProgram | null): SectionProgram {
+  if (!prev) return next;
+  const endBar = scoreEndAt(prev, next.startCycle - prev.startCycle);
+  let changed = false;
+  const parts = next.parts.map((p) => {
+    const before = p.carried ? prev.parts.find((q) => q.id === p.id) : undefined;
+    if (!before) return p;
+    const knobs = p.knobs.map((k) => {
+      const ended = before.knobs.find((b) => b.name === k.name);
+      if (!ended) return k;
+      const value = Math.min(k.max, Math.max(k.min, laneValue(lanesFor(before.automation, `knob:${k.name}`), endBar, ended.default)));
+      if (value === k.default) return k;
+      changed = true;
+      return { ...k, default: value };
+    });
+    return { ...p, knobs };
+  });
+  return changed ? { ...next, parts } : next;
+}
+
 export interface CompileInput {
   id: string;
   index: number;
@@ -242,7 +267,7 @@ export function compileSection(input: CompileInput): { program: SectionProgram; 
     publicNote: plan.publicNote,
     author: input.author,
   };
-  return { program, trims: balanceTrims(parts, checks) };
+  return { program: withCarriedKnobs(program, prev), trims: balanceTrims(parts, checks) };
 }
 
 /**

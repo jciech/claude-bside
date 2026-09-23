@@ -1,11 +1,11 @@
-// The schedule as the performer sees it: every (section, part) instance with its absolute extent,
-// how it begins and ends (continuation, transition, release) and its carried knob values. Pure:
-// every client derives the same instances from the same sections (src/client/engine/types.ts).
+// The schedule as the performer sees it: every (section, part) instance with its absolute extent
+// and how it begins and ends (continuation, transition, release). Pure: every client derives the
+// same instances from the same sections (src/client/engine/types.ts). Carried knob values need no
+// history: the conductor writes them into each carried part's knob defaults.
 import { PERCUSSIVE_ROLES, PITCHED_ROLES, type PartRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
 import { influenceCycle, scoreBarAt } from '../../shared/schedule.ts';
 import { cpsAtCycle, msAtCycle, type Timeline } from '../../shared/timeline.ts';
-import { knobBaseAt } from './knobs.ts';
 
 /** How long a channel takes to release after its instance stops: 1 beat (percussive) or 1 bar. */
 export function roleReleaseBars(role: PartRole): number {
@@ -38,8 +38,6 @@ export interface InstanceSpec {
   highpassOpen: { at: number; bars: number } | null;
   /** Channel low-pass closing over [at, at + bars) (outgoing filter transition). */
   lowpassClose: { at: number; bars: number } | null;
-  /** Knob values carried from the previous section's same-id part (carried parts only). */
-  inherited: Record<string, number> | null;
 }
 
 export interface RiserSpec {
@@ -77,18 +75,12 @@ export function effectiveTransition(s: SectionProgram, arrivedAt: number | undef
   return t.type;
 }
 
-/** Score position at the end of the play span [0, playLen) — where a successor picks up. */
-function scoreEndAt(s: SectionProgram, playLen: number): number {
-  return playLen >= 1 ? scoreBarAt(s, playLen - 1) + 1 : 0;
-}
-
 export function buildScore(input: readonly SectionProgram[], arrivals: ReadonlyMap<string, number>): Score {
   const sections = [...input].sort((a, b) => a.startCycle - b.startCycle);
   const transitions = new Map<string, EffectiveTransition>();
   for (const s of sections) transitions.set(s.id, effectiveTransition(s, arrivals.get(s.id)));
   const instances: InstanceSpec[] = [];
   const risers: RiserSpec[] = [];
-  const endValues = new Map<string, Record<string, number>>();
 
   sections.forEach((section, i) => {
     const prev = sections[i - 1] ?? null;
@@ -125,7 +117,6 @@ export function buildScore(input: readonly SectionProgram[], arrivals: ReadonlyM
         }
       }
 
-      const inherited = part.carried && before ? (endValues.get(`${prev!.id}:${part.id}`) ?? null) : null;
       const spec: InstanceSpec = {
         key: `${section.id}:${part.id}`,
         section,
@@ -141,16 +132,8 @@ export function buildScore(input: readonly SectionProgram[], arrivals: ReadonlyM
         highpassOpen:
           !continuing && !pickup && incoming === 'filter' ? { at: section.startCycle, bars: Math.max(0.5, section.transitionIn.bars / 2) } : null,
         lowpassClose,
-        inherited,
       };
       if (spec.end > spec.start) instances.push(spec);
-
-      if (next && part.knobs.length) {
-        const bar = scoreEndAt(section, next.startCycle - section.startCycle);
-        const ends: Record<string, number> = {};
-        for (const k of part.knobs) ends[k.name] = knobBaseAt(part, k, bar, inherited?.[k.name]);
-        endValues.set(spec.key, ends);
-      }
     }
   });
 

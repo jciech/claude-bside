@@ -43,9 +43,12 @@ export function levelAt(part: Pick<Automated, 'level' | 'automation'>, bar: numb
   return clamp(laneValue(lanesFor(part.automation, 'level'), bar, part.level), 0, 1);
 }
 
-/** A knob's lane value at a score bar before the room's follow offset (unclamped). */
-export function knobBaseAt(part: Pick<Automated, 'automation'>, knob: Knob, bar: number, inherited: number | undefined): number {
-  return laneValue(lanesFor(part.automation, `knob:${knob.name}`), bar, inherited ?? knob.default);
+/**
+ * A knob's lane value at a score bar before the room's follow offset (unclamped). For a carried part
+ * the conductor has set `default` to the value its predecessor ended on.
+ */
+export function knobBaseAt(part: Pick<Automated, 'automation'>, knob: Knob, bar: number): number {
+  return laneValue(lanesFor(part.automation, `knob:${knob.name}`), bar, knob.default);
 }
 
 export interface Macros {
@@ -54,8 +57,8 @@ export interface Macros {
 }
 
 /** Lane value + follow offset (up to ±half the range at a full macro), clamped to the knob's range. */
-export function knobAt(part: Pick<Automated, 'automation'>, knob: Knob, bar: number, inherited: number | undefined, macros: Macros): number {
-  const base = knobBaseAt(part, knob, bar, inherited);
+export function knobAt(part: Pick<Automated, 'automation'>, knob: Knob, bar: number, macros: Macros): number {
+  const base = knobBaseAt(part, knob, bar);
   const follow = followOffset(knob.follows, macros) * ((knob.max - knob.min) / 2);
   return clamp(base + follow, Math.min(knob.min, knob.max), Math.max(knob.min, knob.max));
 }

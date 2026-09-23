@@ -306,7 +306,7 @@
      "knobs": [
       {
        "name": "cut",
-       "default": 800,
+       "default": 1200,
        "min": 300,
        "max": 2400,
        "follows": "brightness"

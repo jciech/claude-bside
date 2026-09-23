@@ -198,7 +198,9 @@ Tempo is part of the section: `bpm` + `tempoRampBars` + `tempoRampAt` ('start' o
    that don't exist (`failingVariants`); measured spans within ±0.2 of targets (warning).
 4. **Novelty and dramaturgy** (§9) — relaxed for the scripted driver (warnings only).
 5. **Placement and compile** under the lock: `startCycle` on the next 4-bar line after the locked
-   horizon whose lock point is still ahead; `originCycle`/`continues` for carried parts; orbits
+   horizon whose lock point is still ahead; `originCycle`/`continues` for carried parts; carried
+   knob values (each carried knob's `default` is set to the value the predecessor ended on, again
+   whenever a Stay or Move on re-issues the section), so no program depends on older ones; orbits
    (continuing parts keep theirs; otherwise the lowest of 1–24 unused by the previous and current
    section); duck targets → orbits; instrument labels; measured spans; trims toward role loudness
    targets from the catalog's measured levels.
@@ -223,8 +225,9 @@ channel(instance) = filter → gain               // level × automation × tran
 
 The code the listener sees is exactly the code that was evaluated, so mini-notation highlight
 offsets stay correct. **Nothing re-evaluates to change a level.** Knobs are bound as
-`signal(t => knobAt(part, name, scoreBar(t)))`: lane value (or the default, or for carried parts the
-value at the previous section's end) plus the follow offset, clamped — identical on every client.
+`signal(t => knobAt(part, name, scoreBar(t)))`: lane value (or the default — for carried parts the
+value at the previous section's end, written there by the conductor) plus the follow offset, clamped
+— identical on every client, whatever earlier sections it still holds.
 
 **Master chain.** superdough has no limiter: orbit sum → safety/tilt EQ (low shelf 150 Hz, high
 shelf 3 kHz) → master trim → `DynamicsCompressor` (limiter settings) → soft clipper → user volume →
