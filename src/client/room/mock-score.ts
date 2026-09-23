@@ -1,7 +1,10 @@
 // The mock room's endless schedule: sides of tracks built from the fixture's two sections
 // (test/fixtures/snapshot.json), placed back to back with fresh ids and the conductor's rules for
-// carried parts — same code continues on its orbit with its origin; anything else gets a fresh
-// orbit — so the real engine performs it exactly as it would a server schedule. Pure.
+// carried parts — a part the track before was still playing with the same code is carried (as the
+// autopilot's code null): it starts from the knob values that part ended on, and continues on its
+// orbit with its origin and trim unless it enters later; anything else gets a fresh orbit — so the
+// real engine performs it exactly as it would a server schedule. Pure.
+import { carriedKnobs } from '../../shared/automation.ts';
 import type { SectionRole, Span, TransitionType } from '../../shared/music.ts';
 import type { MovementInfo, ProgramPart, SectionProgram } from '../../shared/program.ts';
 import type { RoomSnapshot } from '../../shared/protocol.ts';
@@ -209,10 +212,16 @@ export class MockScore {
         level: spec.level ?? base.level,
       };
       const before = prev?.parts.find((p) => p.id === part.id);
-      if (before && before.code === part.code && before.exitBar === null && part.enterBar <= 0) {
-        out.push({ ...part, orbit: before.orbit, originCycle: before.originCycle, continues: true, carried: true, enterBar: 0 });
+      if (!prev || !before || before.code !== part.code || before.exitBar !== null) {
+        pending.push({ ...part, originCycle: startCycle, continues: false, carried: false });
+        continue;
+      }
+      // A track follows at its predecessor's planned end, where that score has ended (after any jump).
+      const knobs = carriedKnobs(part.knobs, before, prev.bars);
+      if (part.enterBar <= 0) {
+        out.push({ ...part, knobs, orbit: before.orbit, originCycle: before.originCycle, trimDb: before.trimDb, continues: true, carried: true, enterBar: 0 });
       } else {
-        pending.push({ ...part, originCycle: startCycle, continues: false, carried: before?.code === part.code });
+        pending.push({ ...part, knobs, originCycle: startCycle, continues: false, carried: true });
       }
     }
     for (const p of out) used.add(p.orbit);

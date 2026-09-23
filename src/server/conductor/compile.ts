@@ -6,9 +6,10 @@ import type { Issue, PartCheck, SectionCheck } from '../../shared/analysis.ts';
 import type { Automation, Knob, Plan, SectionPlan } from '../../shared/plan.ts';
 import type { PartRole, SectionRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
-import type { CheckSectionInput } from '../types.ts';
+import type { CheckPartInput, CheckSectionInput } from '../types.ts';
+import { carriedKnobs } from '../../shared/automation.ts';
 import { influenceCycle, vampLoopFor } from '../../shared/schedule.ts';
-import { lanesFor, laneValue, levelAt } from './knobs.ts';
+import { levelAt } from './knobs.ts';
 import { patternBarAt, scoreEndAt } from './placement.ts';
 
 export const ORBITS = 24;
@@ -43,7 +44,10 @@ export interface ResolvedPart {
   exitBar: number | null;
   automation: Automation[];
   duckTargets: { targets: string[]; depth: number; releaseSec: number } | null;
-  /** Code identical to the previous section's same-id part. */
+  /**
+   * Carried from the previous section (plan code null): its code, and knob values that pick up where
+   * that part left them. A part that writes out identical code declares its own knob values.
+   */
   carried: boolean;
   /** Carried without restart: one uninterrupted instance with the previous one. */
   continues: boolean;
@@ -88,7 +92,7 @@ export function resolveSection(plan: SectionPlan, prev: CarrySource | null, path
       exitBar: p.exitBar,
       automation: [...p.automation],
       duckTargets: p.duck,
-      carried: before !== null && before.code === code,
+      carried: p.code === null,
       continues: p.code === null && !p.restart,
     });
   });
@@ -106,25 +110,42 @@ export function continuingPatternBars(parts: readonly ResolvedPart[], prev: Sect
   return out;
 }
 
+type CheckedPart = Pick<ProgramPart, 'id' | 'role' | 'code' | 'knobs' | 'chromatic' | 'level' | 'enterBar' | 'exitBar' | 'automation'>;
+
+function checkPartInput(p: CheckedPart, patternBarAtStart: number, continues: boolean): CheckPartInput {
+  return {
+    id: p.id,
+    role: p.role,
+    code: p.code,
+    knobs: p.knobs,
+    chromatic: p.chromatic,
+    level: p.level,
+    enterBar: p.enterBar,
+    exitBar: p.exitBar,
+    patternBarAtStart,
+    continues,
+    automation: p.automation,
+  };
+}
+
 export function checkInputFor(plan: SectionPlan, parts: readonly ResolvedPart[], patternBars: ReadonlyMap<string, number>): CheckSectionInput {
   return {
-    parts: parts.map((p) => ({
-      id: p.id,
-      role: p.role,
-      code: p.code,
-      knobs: p.knobs,
-      chromatic: p.chromatic,
-      level: p.level,
-      enterBar: p.enterBar,
-      exitBar: p.exitBar,
-      patternBarAtStart: patternBars.get(p.id) ?? 0,
-      continues: patternBars.has(p.id),
-      automation: p.automation,
-    })),
+    parts: parts.map((p) => checkPartInput(p, patternBars.get(p.id) ?? 0, patternBars.has(p.id))),
     bpm: plan.bpm,
     scale: plan.scale,
     bars: plan.bars,
     vampLoopBars: vampLoopFor(plan.bars),
+  };
+}
+
+/** A compiled program checked again (warm restore) with the inputs its commit was checked with. */
+export function checkInputForProgram(s: SectionProgram): CheckSectionInput {
+  return {
+    parts: s.parts.map((p) => checkPartInput(p, s.startCycle - p.originCycle, p.continues)),
+    bpm: s.tempo.toBpm,
+    scale: s.scale,
+    bars: s.bars,
+    vampLoopBars: s.vamp.loopBars,
   };
 }
 
@@ -197,6 +218,37 @@ export function balanceTrims(parts: readonly { id: string; role: PartRole; level
   return trims;
 }
 
+/** The section carried parts pick their knob values up from, and the score bar it ended on. */
+export interface KnobSource {
+  parts: readonly { id: string; knobs: readonly Knob[]; automation: readonly Automation[] }[];
+  endBar: number;
+}
+
+/** `prev` as a section starting at `startCycle` finds it: a vamp, a Stay or a cut-in moves its end. */
+export function knobSourceAt(prev: SectionProgram, startCycle: number): KnobSource {
+  return { parts: prev.parts, endBar: scoreEndAt(prev, startCycle - prev.startCycle) };
+}
+
+function carryKnobs<P extends { id: string; carried: boolean; knobs: Knob[] }>(parts: P[], prev: KnobSource): P[] {
+  let changed = false;
+  const out = parts.map((p) => {
+    const before = p.carried ? prev.parts.find((q) => q.id === p.id) : undefined;
+    const knobs = before ? carriedKnobs(p.knobs, before, prev.endBar) : p.knobs;
+    if (knobs === p.knobs) return p;
+    changed = true;
+    return { ...p, knobs };
+  });
+  return changed ? out : parts;
+}
+
+/**
+ * Carried parts with the knob values the section before left them at as their defaults, before the
+ * check: the checker and the build rule measure what listeners will hear (ARCHITECTURE §6).
+ */
+export function withCarriedDefaults(parts: ResolvedPart[], prev: KnobSource | null): ResolvedPart[] {
+  return prev ? carryKnobs(parts, prev) : parts;
+}
+
 /**
  * A carried part starts from the knob values its predecessor's same-id part ended on. They are
  * written into the carried part's knob defaults, so a program never depends on earlier sections a
@@ -204,22 +256,8 @@ export function balanceTrims(parts: readonly { id: string; role: PartRole; level
  */
 export function withCarriedKnobs(next: SectionProgram, prev: SectionProgram | null): SectionProgram {
   if (!prev) return next;
-  const endBar = scoreEndAt(prev, next.startCycle - prev.startCycle);
-  let changed = false;
-  const parts = next.parts.map((p) => {
-    const before = p.carried ? prev.parts.find((q) => q.id === p.id) : undefined;
-    if (!before) return p;
-    const knobs = p.knobs.map((k) => {
-      const ended = before.knobs.find((b) => b.name === k.name);
-      if (!ended) return k;
-      const value = Math.min(k.max, Math.max(k.min, laneValue(lanesFor(before.automation, `knob:${k.name}`), endBar, ended.default)));
-      if (value === k.default) return k;
-      changed = true;
-      return { ...k, default: value };
-    });
-    return { ...p, knobs };
-  });
-  return changed ? { ...next, parts } : next;
+  const parts = carryKnobs(next.parts, knobSourceAt(prev, next.startCycle));
+  return parts === next.parts ? next : { ...next, parts };
 }
 
 export interface CompileInput {
@@ -256,7 +294,8 @@ export function compileSection(input: CompileInput): SectionProgram {
       code: p.code,
       orbit: orbits.get(p.id)!,
       level: p.level,
-      trimDb: trims[p.id] ?? 0,
+      // One uninterrupted instance keeps one trim: a re-balance would step its level at the boundary.
+      trimDb: continues ? before!.trimDb : (trims[p.id] ?? 0),
       enterBar: p.enterBar,
       exitBar: p.exitBar,
       knobs: p.knobs,

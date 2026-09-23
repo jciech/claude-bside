@@ -24,16 +24,19 @@ export interface ProgramPart {
   /**
    * Balance trim in dB toward the role's loudness target (0 when the sound's level is unmeasured).
    * It belongs to this instance across its whole window: a rewritten same-id part crossfading against
-   * itself keeps each instance's own trim, and it holds from the instance's first sound.
+   * itself keeps each instance's own trim, and it holds from the instance's first sound. A continuing
+   * part is the same instance, so it keeps its predecessor's trim: its level never steps at the
+   * boundary.
    */
   trimDb: number;
   /** Score bars. enterBar < 0 is a pickup over the previous section's end. */
   enterBar: number;
   exitBar: number | null;
   /**
-   * Complete knob declarations (inherited ones included). For a carried part the conductor sets each
-   * inherited knob's `default` to the value the previous section's same-id part ended on, so knob
-   * values never depend on sections a client no longer holds.
+   * Complete knob declarations (inherited ones included). For a carried part the conductor sets the
+   * `default` of each knob the previous section's same-id part also declares to the value that part
+   * ended on (re-derived when a Stay or Move on moves where it ends), so knob values never depend on
+   * sections a client no longer holds. The checker measures the part from these values too.
    */
   knobs: Knob[];
   automation: Automation[];
@@ -51,7 +54,11 @@ export interface ProgramPart {
    * no truncation at the boundary, and play time (not score time) drives its pattern.
    */
   continues: boolean;
-  /** Code identical to the previous section's same-id part (continuing or restarted). */
+  /**
+   * Carried from the previous section's same-id part (plan code null; continuing or restarted): its
+   * knob values pick up where that part left them. A part whose plan writes identical code out is not
+   * carried: it declares its own knob values.
+   */
   carried: boolean;
   chromatic: boolean;
   /** Human label of the main sound, e.g. "TR-909 kick", "Vibraphone (VCSL)". */

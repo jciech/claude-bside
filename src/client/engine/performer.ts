@@ -3,7 +3,6 @@
 // score-time mapping → window (re-onset at entries, truncation at cuts) → engine keys → guard.
 // Knobs are signals of the hap's own time, so every client computes the same values.
 import * as core from '@strudel/core';
-import type { Knob } from '../../shared/plan.ts';
 import type { MixerState } from '../../shared/program.ts';
 import { ROLE_FAMILY, type PartRole } from '../../shared/music.ts';
 import { MAX_HAPS_PER_TICK, MAX_PART_HAPS_PER_TICK, MAX_PART_ONSETS_PLAYED_PER_BAR, sanitizeModelValue } from '../../shared/limits.ts';
@@ -189,8 +188,13 @@ export class Performer {
     return [inst.start, Math.max(inst.start, to)];
   }
 
+  /**
+   * Everything a compile bakes in: a re-issue (Stay, Move on) can move the origin under the same code.
+   * Knob values are not baked in: each knob reads the declaration of the instance being queried.
+   */
   private cacheKey(inst: InstanceSpec): string {
-    return `${inst.key}\u0000${inst.part.code}`;
+    const knobs = inst.part.knobs.map((k) => k.name).join(',');
+    return `${inst.key}\u0000${inst.part.originCycle}\u0000${knobs}\u0000${inst.part.code}`;
   }
 
   private guardOf(key: string): Guard {
@@ -210,18 +214,14 @@ export class Performer {
       return cached;
     }
     let result: Compiled | null = null;
-    const knobs = new Map(inst.part.knobs.map((k) => [k.name, k]));
-    const check = validatePart(inst.part.code, { knobs: [...knobs.keys()] });
+    const check = validatePart(inst.part.code, { knobs: inst.part.knobs.map((k) => k.name) });
     if (!check.ok) {
       this.reportOnce(inst, 'eval', `The part failed validation: ${check.errors[0]?.message ?? 'invalid code'}`);
     } else {
       try {
         const binding: Binding = { inst, shift: 0 };
         const { pattern } = compilePart(inst.part.code, {
-          knob: (name) => {
-            const knob = knobs.get(name)!;
-            return core.signal((t: unknown) => this.knobValue(binding, knob, Number(t)));
-          },
+          knob: (name) => core.signal((t: unknown) => this.knobValue(binding, name, Number(t))),
         });
         const origin = inst.part.originCycle;
         const sanitized = pattern.withValue((v: unknown) => (isRecord(v) ? sanitizeModelValue(v) : v));
@@ -234,8 +234,10 @@ export class Performer {
     return result;
   }
 
-  private knobValue(binding: Binding, knob: Knob, t: number): number {
+  private knobValue(binding: Binding, name: string, t: number): number {
     const inst = binding.inst;
+    const knob = inst.part.knobs.find((k) => k.name === name);
+    if (!knob) return 0;
     const s = inst.section;
     const query = inst.part.originCycle + t;
     const play = query + binding.shift;

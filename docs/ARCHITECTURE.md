@@ -191,9 +191,11 @@ Tempo is part of the section: `bpm` + `tempoRampBars` + `tempoRampAt` ('start' o
    string passes `isPublicText` (`src/shared/text.ts`).
 2. **Code** through `Checker.checkSection` (validate → evaluate → analyse the full `bars` + one vamp
    loop, at the section's tempo, in a worker, the way the performer plays it: level and knob lanes
-   applied, parts that start in the section replaying their score in the vamp while continuing parts
-   run on, only bars inside each part's window counted): errors are phrased for self-repair — rule,
-   message, line/col, excerpt, hint ("Unknown method `.reverb` — did you mean `.room`?").
+   applied, carried knobs starting where the section before left them (step 5's values, worked out
+   for the placed start before checking), parts that start in the section replaying their score in
+   the vamp while continuing parts run on, only bars inside each part's window counted): errors are
+   phrased for self-repair — rule, message, line/col, excerpt, hint ("Unknown method `.reverb` — did
+   you mean `.room`?").
 3. **Musical rules**: key fit per bar against the (possibly alternating) scale — < 0.6 is an error,
    0.6–0.8 a warning, `chromatic` parts exempt; bass register; onsets per bar ≤ `MAX_PART_ONSETS_PER_BAR`;
    hap limits; room/delay parameters constant per part; unknown sounds, soundfont ranges and variants
@@ -201,14 +203,16 @@ Tempo is part of the section: `bpm` + `tempoRampBars` + `tempoRampAt` ('start' o
 4. **Novelty and dramaturgy** (§9) — relaxed for the scripted driver (warnings only).
 5. **Placement and compile** under the lock: `startCycle` on the next 4-bar line after the locked
    horizon whose lock point is still ahead; `originCycle`/`continues` for carried parts; carried
-   knob values (each carried knob's `default` is set to the value the predecessor ended on, again
-   whenever a Stay or Move on re-issues the section), so no program depends on older ones; orbits
-   (continuing parts keep theirs; otherwise the lowest of 1–24 unused by the previous and current
-   section and by any earlier instance still sounding at the section's influence cycle — a crossfade
-   tail or release under a pickup or a cut-in); duck targets → orbits; instrument labels; measured
-   spans; each part instance's trim toward its role's loudness target from the catalog's measured
-   levels (`ProgramPart.trimDb`, so it holds from the instance's first sound and a same-id part
-   crossfading against itself keeps its own).
+   knob values (a code-null part's knob `default` is set to the value its predecessor's same-id part
+   ended on, again whenever a Stay or Move on re-issues the section; a part that writes identical code
+   out declares its own), so no program depends on older ones; orbits (continuing parts keep
+   theirs; otherwise the lowest of 1–24 unused by the previous and current section and by any
+   earlier instance still sounding at the section's influence cycle — a crossfade tail or release
+   under a pickup or a cut-in); duck targets → orbits; instrument labels; measured spans; each part
+   instance's trim toward its role's loudness target from the catalog's measured levels
+   (`ProgramPart.trimDb`, so it holds from the instance's first sound and a same-id part
+   crossfading against itself keeps its own; a continuing part keeps its predecessor's, since a
+   re-balance would step the level of one uninterrupted sound — its level lanes move it smoothly).
 6. **Schedule**: rebuild the timeline, bump `rev`, persist the session, broadcast one atomic
    `schedule` update (movements, upserts, revokes). Replaced provisional sections are revoked in
    the same update, never before the replacement is accepted.

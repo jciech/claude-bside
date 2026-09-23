@@ -74,7 +74,8 @@ export interface CheckPartInput {
   /**
    * The part's level and knob lanes (plan automation). The checker measures the part the way the
    * performer plays it: each event at the level of its bar, knobs bound to their lanes (from each
-   * knob's default). Omitted: no lanes.
+   * knob's default, which for a carried part is the value the section before left it at, as
+   * ProgramPart.knobs). Omitted: no lanes.
    */
   automation?: Automation[];
 }

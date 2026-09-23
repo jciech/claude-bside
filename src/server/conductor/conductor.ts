@@ -8,7 +8,7 @@ import type { Issue, SectionCheck, SectionFingerprint } from '../../shared/analy
 import type { AuditionResult, CommitBody, CommitResult, ComposerApiStatus, DriverName, PlanReason, PlanRequest, TurnContext } from '../../shared/composer-api.ts';
 import { bpmToCps, cpsToBpm, DEFAULT_BPM, type SectionRole } from '../../shared/music.ts';
 import { PlanSchema, type AuditionInput, type Plan, type RequestDecision } from '../../shared/plan.ts';
-import { EMPTY_MIXER, type MixerState, type MovementInfo, type SectionProgram } from '../../shared/program.ts';
+import { EMPTY_MIXER, type MixerState, type MovementInfo, type ProgramPart, type SectionProgram } from '../../shared/program.ts';
 import { namesScheduledPart, type ComposerStatus, type LinerNote, type LinerNoteKind, type PadPoint, type RequestStatus, type ScheduleUpdate } from '../../shared/protocol.ts';
 import {
   HORIZON_TRIGGER_MIN_S,
@@ -58,7 +58,19 @@ import {
   type DramaturgyEntry,
 } from './accept.ts';
 import { ARC_AMPLITUDE, bendBaseline, isAmbient, isPeakSpan, peakThreshold, type Arc, type Baseline, type BudgetSpan } from './arc.ts';
-import { balanceTrims, carryPlan, checkInputFor, compileSection, continuingPatternBars, resolveSection, withCarriedKnobs, type ResolvedPart } from './compile.ts';
+import {
+  balanceTrims,
+  carryPlan,
+  checkInputFor,
+  checkInputForProgram,
+  compileSection,
+  continuingPatternBars,
+  knobSourceAt,
+  resolveSection,
+  withCarriedDefaults,
+  withCarriedKnobs,
+  type ResolvedPart,
+} from './compile.ts';
 import { buildTurnContext, planBarBounds, type MovementState } from './context.ts';
 import { decideKeep } from './keep.ts';
 import { createLedger, LEDGER_WINDOW_MS } from './ledger.ts';
@@ -597,9 +609,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const anchor = placement.anchor;
     const s0 = plan.sections[0]!;
     const s1 = plan.sections[1];
-    const r0 = resolveSection(s0, anchor, 'sections[0]');
-    const r1 = s1 ? resolveSection(s1, { name: s0.name, parts: r0.parts }, 'sections[1]') : null;
     const starts = [placement.startCycle, placement.startCycle + s0.bars];
+    // Carried knob values depend on where the section before ends: the checker measures them as placed.
+    const r0 = resolveSection(s0, anchor, 'sections[0]');
+    r0.parts = withCarriedDefaults(r0.parts, anchor && knobSourceAt(anchor, starts[0]!));
+    const r1 = s1 ? resolveSection(s1, { name: s0.name, parts: r0.parts }, 'sections[1]') : null;
+    if (r1) r1.parts = withCarriedDefaults(r1.parts, { parts: r0.parts, endBar: s0.bars });
     const bars0 = continuingPatternBars(r0.parts, anchor, starts[0]!);
     const bars1 = new Map((r1?.parts ?? []).filter((p) => p.continues).map((p) => [p.id, (bars0.get(p.id) ?? 0) + s0.bars]));
     const issues: Issue[] = [...r0.errors, ...(r1?.errors ?? [])];
@@ -1512,25 +1527,6 @@ export function createConductor(deps: ConductorDeps): Conductor {
 
   // ─── Boot and restore ─────────────────────────────────────────────────────────────────────────
 
-  function restoredCheckInput(s: SectionProgram) {
-    return {
-      parts: s.parts.map((p) => ({
-        id: p.id,
-        role: p.role,
-        code: p.code,
-        knobs: p.knobs,
-        chromatic: p.chromatic,
-        level: p.level,
-        enterBar: p.enterBar,
-        exitBar: p.exitBar,
-        patternBarAtStart: s.startCycle - p.originCycle,
-      })),
-      bpm: s.tempo.toBpm,
-      scale: s.scale,
-      bars: s.bars,
-    };
-  }
-
   /** Warm restore when the committed horizon still covers downtime + preload; returns the last cycle otherwise. */
   async function tryRestore(): Promise<{ restored: true } | { restored: false; lastCycle: number | null }> {
     const saved = store.readJson<PersistedSession>(STORE_KEYS.session);
@@ -1540,7 +1536,12 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const tl: Timeline = { segments: saved.timeline.segments.map((s) => ({ ...s, startMs: s.startMs + shift })) };
     const c = cycleAtMs(tl, now);
     const lastCycle = Math.max(saved.lastCycle, Number.isFinite(c) ? c : 0);
-    const ordered = [...saved.sections].sort((a, b) => a.startCycle - b.startCycle);
+    // Programs saved before carried knob values moved into them get those values now (else a no-op).
+    const ordered: SectionProgram[] = [];
+    for (const s of [...saved.sections].sort((a, b) => a.startCycle - b.startCycle)) {
+      const carried = withCarriedKnobs(s, ordered[ordered.length - 1] ?? null);
+      ordered.push(carried === s ? s : { ...carried, rev: s.rev + 1 });
+    }
     const tail = ordered[ordered.length - 1];
     const need = now + SECTION_PRELOAD_S * 1000 + PRELOAD_BARS * barMsAt(tl, c) + ACCEPT_BUDGET_MS;
     // A new epoch never closes the rows of what was playing when the last one stopped.
@@ -1559,7 +1560,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const kept: SectionProgram[] = [];
     const checks = new Map<string, SectionCheck>();
     for (const s of live) {
-      const result = await checkWithTimeout(restoredCheckInput(s));
+      const result = await checkWithTimeout(checkInputForProgram(s));
       if (!result.ok) {
         log.warn('conductor: a restored section failed re-validation; dropping it and what follows', { section: s.id, errors: result.errors.slice(0, 3) });
         break;
@@ -1577,12 +1578,17 @@ export function createConductor(deps: ConductorDeps): Conductor {
     sectionSeq = saved.sectionSeq;
     movementSeq = saved.movementSeq;
     side = saved.side;
-    sections = kept.map((s) => {
+    const restored: SectionProgram[] = [];
+    for (const s of kept) {
       const check = checks.get(s.id)!;
       const trims = balanceTrims(s.parts, s.parts.map((p) => check.parts.find((x) => x.id === p.id)));
-      // Programs persisted before trims moved onto their parts get them from the re-check.
-      return { ...s, parts: s.parts.map((p) => ({ ...p, trimDb: p.trimDb ?? trims[p.id] ?? 0 })) };
-    });
+      const prev = restored[restored.length - 1];
+      // Programs persisted before trims moved onto their parts get them from the re-check; a continuing
+      // part keeps its predecessor's, as compileSection gives it.
+      const trimOf = (p: ProgramPart) => (p.continues ? prev?.parts.find((q) => q.id === p.id)?.trimDb : undefined) ?? trims[p.id] ?? 0;
+      restored.push({ ...s, parts: s.parts.map((p) => ({ ...p, trimDb: p.trimDb ?? trimOf(p) })) });
+    }
+    sections = restored;
     const referenced = new Set(kept.map((s) => s.movementId));
     movements = saved.movements.filter((m) => referenced.has(m.id));
     mixer = saved.mixer ?? EMPTY_MIXER;
