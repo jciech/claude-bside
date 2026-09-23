@@ -1,0 +1,524 @@
+{
+ "version": "fixture-1",
+ "generatedAt": "2026-09-23T00:00:00.000Z",
+ "soundfontBase": "https://raw.githubusercontent.com/felixroos/webaudiofontdata/23ca907d4370a04fd89ca483a92915e4d6159ab9/sound",
+ "maps": [
+  {
+   "id": "dirt-samples",
+   "kind": "samples",
+   "path": "/palette/maps/dirt-samples.json",
+   "upstream": "tidalcycles/Dirt-Samples@c74fc80",
+   "license": "unspecified",
+   "order": 1
+  },
+  {
+   "id": "tidal-drum-machines",
+   "kind": "samples",
+   "path": "/palette/maps/tidal-drum-machines.json",
+   "upstream": "ritchse/tidal-drum-machines@15eac73",
+   "license": "unspecified",
+   "order": 2
+  },
+  {
+   "id": "tidal-drum-machines-alias",
+   "kind": "bank-aliases",
+   "path": "/palette/maps/tidal-drum-machines-alias.json",
+   "upstream": "todepond/samples@f58b317",
+   "license": "unspecified",
+   "order": 3
+  },
+  {
+   "id": "vcsl",
+   "kind": "samples",
+   "path": "/palette/maps/vcsl.json",
+   "upstream": "sgossner/VCSL@c1ea7bc",
+   "license": "CC0",
+   "order": 4
+  },
+  {
+   "id": "switchangel-breaks",
+   "kind": "samples",
+   "path": "/palette/maps/switchangel-breaks.json",
+   "upstream": "switchangel/breaks@13784b1",
+   "license": "Unlicense",
+   "order": 5
+  },
+  {
+   "id": "uzu-wavetables",
+   "kind": "samples",
+   "path": "/palette/maps/uzu-wavetables.json",
+   "upstream": "tidalcycles/uzu-wavetables@3432ce3",
+   "license": "Unlicense",
+   "order": 6
+  }
+ ],
+ "sounds": [
+  {
+   "id": "sine",
+   "kind": "synth",
+   "category": "harmonic",
+   "family": "synth/basic",
+   "tags": "pure, soft",
+   "label": "Sine",
+   "count": 1,
+   "pitched": true,
+   "source": "builtin",
+   "usage": {
+    "s": "sine"
+   },
+   "brightness": 0.1,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "triangle",
+   "kind": "synth",
+   "category": "harmonic",
+   "family": "synth/basic",
+   "tags": "soft, hollow",
+   "label": "Triangle",
+   "count": 1,
+   "pitched": true,
+   "source": "builtin",
+   "usage": {
+    "s": "triangle"
+   },
+   "brightness": 0.25,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "square",
+   "kind": "synth",
+   "category": "melodic",
+   "family": "synth/basic",
+   "tags": "hollow, retro",
+   "label": "Square",
+   "count": 1,
+   "pitched": true,
+   "source": "builtin",
+   "usage": {
+    "s": "square"
+   },
+   "brightness": 0.55,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "sawtooth",
+   "kind": "synth",
+   "category": "bass",
+   "family": "synth/basic",
+   "tags": "bright, buzzy",
+   "label": "Sawtooth",
+   "count": 1,
+   "pitched": true,
+   "source": "builtin",
+   "usage": {
+    "s": "sawtooth"
+   },
+   "brightness": 0.7,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "supersaw",
+   "kind": "synth",
+   "category": "harmonic",
+   "family": "synth/detuned",
+   "tags": "wide, lush, trance",
+   "label": "Supersaw",
+   "count": 1,
+   "pitched": true,
+   "source": "builtin",
+   "usage": {
+    "s": "supersaw"
+   },
+   "brightness": 0.75,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "sbd",
+   "kind": "synth",
+   "category": "percussion",
+   "family": "synth/kick",
+   "tags": "synth kick, punchy",
+   "label": "Synth kick",
+   "count": 1,
+   "pitched": false,
+   "source": "builtin",
+   "usage": {
+    "s": "sbd"
+   },
+   "brightness": 0.1,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "white",
+   "kind": "synth",
+   "category": "texture",
+   "family": "synth/noise",
+   "tags": "noise, hiss",
+   "label": "White noise",
+   "count": 1,
+   "pitched": false,
+   "source": "builtin",
+   "usage": {
+    "s": "white"
+   },
+   "brightness": 0.95,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "pink",
+   "kind": "synth",
+   "category": "texture",
+   "family": "synth/noise",
+   "tags": "noise, softer",
+   "label": "Pink noise",
+   "count": 1,
+   "pitched": false,
+   "source": "builtin",
+   "usage": {
+    "s": "pink"
+   },
+   "brightness": 0.6,
+   "level": null,
+   "license": "AGPL-3.0"
+  },
+  {
+   "id": "bd",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "dirt/kick",
+   "tags": "kick, classic",
+   "label": "Kick (Dirt)",
+   "count": 24,
+   "pitched": false,
+   "source": "dirt-samples",
+   "usage": {
+    "s": "bd"
+   },
+   "brightness": 0.12,
+   "level": null,
+   "license": "unspecified",
+   "bytes": 40000,
+   "durationSec": 0.4
+  },
+  {
+   "id": "hh",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "dirt/hat",
+   "tags": "closed hat",
+   "label": "Hi-hat (Dirt)",
+   "count": 13,
+   "pitched": false,
+   "source": "dirt-samples",
+   "usage": {
+    "s": "hh"
+   },
+   "brightness": 0.9,
+   "level": null,
+   "license": "unspecified",
+   "bytes": 12000,
+   "durationSec": 0.1
+  },
+  {
+   "id": "sd",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "dirt/snare",
+   "tags": "snare",
+   "label": "Snare (Dirt)",
+   "count": 2,
+   "pitched": false,
+   "source": "dirt-samples",
+   "usage": {
+    "s": "sd"
+   },
+   "brightness": 0.55,
+   "level": null,
+   "license": "unspecified",
+   "bytes": 30000,
+   "durationSec": 0.3
+  },
+  {
+   "id": "casio",
+   "kind": "sample",
+   "category": "melodic",
+   "family": "dirt/toy",
+   "tags": "toy, lo-fi",
+   "label": "Casio",
+   "count": 3,
+   "pitched": false,
+   "source": "dirt-samples",
+   "usage": {
+    "s": "casio"
+   },
+   "brightness": 0.5,
+   "level": null,
+   "license": "unspecified",
+   "bytes": 20000,
+   "durationSec": 0.3
+  },
+  {
+   "id": "rolandtr909_bd",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "drum-machine/kick",
+   "tags": "909, punchy, house",
+   "label": "TR-909 kick",
+   "count": 4,
+   "pitched": false,
+   "source": "tidal-drum-machines",
+   "usage": {
+    "s": "bd",
+    "bank": "RolandTR909"
+   },
+   "brightness": 0.15,
+   "level": null,
+   "license": "unspecified",
+   "machine": "RolandTR909",
+   "aliases": [
+    "tr909_bd"
+   ],
+   "bytes": 60000,
+   "durationSec": 0.5
+  },
+  {
+   "id": "rolandtr909_hh",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "drum-machine/hat",
+   "tags": "909, crisp",
+   "label": "TR-909 closed hat",
+   "count": 4,
+   "pitched": false,
+   "source": "tidal-drum-machines",
+   "usage": {
+    "s": "hh",
+    "bank": "RolandTR909"
+   },
+   "brightness": 0.92,
+   "level": null,
+   "license": "unspecified",
+   "machine": "RolandTR909",
+   "aliases": [
+    "tr909_hh"
+   ],
+   "bytes": 15000,
+   "durationSec": 0.1
+  },
+  {
+   "id": "rolandtr909_sd",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "drum-machine/snare",
+   "tags": "909, snappy",
+   "label": "TR-909 snare",
+   "count": 16,
+   "pitched": false,
+   "source": "tidal-drum-machines",
+   "usage": {
+    "s": "sd",
+    "bank": "RolandTR909"
+   },
+   "brightness": 0.6,
+   "level": null,
+   "license": "unspecified",
+   "machine": "RolandTR909",
+   "aliases": [
+    "tr909_sd"
+   ],
+   "bytes": 40000,
+   "durationSec": 0.3
+  },
+  {
+   "id": "rolandtr909_cp",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "drum-machine/clap",
+   "tags": "909 clap",
+   "label": "TR-909 clap",
+   "count": 5,
+   "pitched": false,
+   "source": "tidal-drum-machines",
+   "usage": {
+    "s": "cp",
+    "bank": "RolandTR909"
+   },
+   "brightness": 0.65,
+   "level": null,
+   "license": "unspecified",
+   "machine": "RolandTR909",
+   "aliases": [
+    "tr909_cp"
+   ],
+   "bytes": 30000,
+   "durationSec": 0.3
+  },
+  {
+   "id": "breaks",
+   "kind": "sample",
+   "category": "percussion",
+   "family": "break/loop",
+   "tags": "breakbeat, 165 bpm, 2 bars",
+   "label": "Breaks (switchangel)",
+   "count": 5,
+   "pitched": false,
+   "source": "switchangel-breaks",
+   "usage": {
+    "s": "breaks"
+   },
+   "brightness": 0.6,
+   "level": null,
+   "license": "Unlicense",
+   "bytes": 500000,
+   "durationSec": 2.9
+  },
+  {
+   "id": "vibraphone",
+   "kind": "sample",
+   "category": "melodic",
+   "family": "vcsl/mallet",
+   "tags": "warm, acoustic, mallet",
+   "label": "Vibraphone (VCSL)",
+   "count": 20,
+   "pitched": true,
+   "source": "vcsl",
+   "usage": {
+    "s": "vibraphone"
+   },
+   "brightness": 0.55,
+   "level": null,
+   "license": "CC0",
+   "bytes": 200000,
+   "durationSec": 2.5
+  },
+  {
+   "id": "gm_epiano1",
+   "kind": "soundfont",
+   "category": "harmonic",
+   "family": "gm/keys",
+   "tags": "electric piano, rhodes, warm",
+   "label": "Electric piano (GM)",
+   "count": 11,
+   "pitched": true,
+   "source": "soundfonts",
+   "usage": {
+    "s": "gm_epiano1"
+   },
+   "brightness": 0.45,
+   "level": null,
+   "license": "MIT / GeneralUser GS",
+   "range": [
+    28,
+    103
+   ],
+   "bytes": 290000
+  },
+  {
+   "id": "gm_acoustic_bass",
+   "kind": "soundfont",
+   "category": "bass",
+   "family": "gm/bass",
+   "tags": "upright, jazz, woody",
+   "label": "Acoustic bass (GM)",
+   "count": 4,
+   "pitched": true,
+   "source": "soundfonts",
+   "usage": {
+    "s": "gm_acoustic_bass"
+   },
+   "brightness": 0.25,
+   "level": null,
+   "license": "MIT / GeneralUser GS",
+   "range": [
+    21,
+    75
+   ],
+   "bytes": 180000
+  },
+  {
+   "id": "gm_string_ensemble_1",
+   "kind": "soundfont",
+   "category": "harmonic",
+   "family": "gm/strings",
+   "tags": "strings, lush, cinematic",
+   "label": "String ensemble (GM)",
+   "count": 11,
+   "pitched": true,
+   "source": "soundfonts",
+   "usage": {
+    "s": "gm_string_ensemble_1"
+   },
+   "brightness": 0.4,
+   "level": null,
+   "license": "MIT / GeneralUser GS",
+   "range": [
+    28,
+    96
+   ],
+   "bytes": 400000
+  },
+  {
+   "id": "wt_digital",
+   "kind": "wavetable",
+   "category": "harmonic",
+   "family": "wavetable/uzu",
+   "tags": "digital, glassy",
+   "label": "Digital wavetable",
+   "count": 5,
+   "pitched": true,
+   "source": "uzu-wavetables",
+   "usage": {
+    "s": "wt_digital"
+   },
+   "brightness": 0.65,
+   "level": null,
+   "license": "Unlicense"
+  },
+  {
+   "id": "wind",
+   "kind": "sample",
+   "category": "texture",
+   "family": "field/nature",
+   "tags": "wind, air, ambient",
+   "label": "Wind (Dirt)",
+   "count": 10,
+   "pitched": false,
+   "source": "dirt-samples",
+   "usage": {
+    "s": "wind"
+   },
+   "brightness": 0.5,
+   "level": null,
+   "license": "unspecified",
+   "bytes": 300000,
+   "durationSec": 4.0
+  },
+  {
+   "id": "speech",
+   "kind": "sample",
+   "category": "vocal",
+   "family": "voice/speech",
+   "tags": "spoken, robotic",
+   "label": "Speech (Dirt)",
+   "count": 7,
+   "pitched": false,
+   "source": "dirt-samples",
+   "usage": {
+    "s": "speech"
+   },
+   "brightness": 0.5,
+   "level": null,
+   "license": "unspecified",
+   "bytes": 60000,
+   "durationSec": 0.8
+  }
+ ]
+}

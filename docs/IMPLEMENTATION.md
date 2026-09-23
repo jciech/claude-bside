@@ -1,0 +1,164 @@
+# Implementation guide
+
+How the rebuild is split into modules that can be built in parallel. Read `docs/ARCHITECTURE.md`
+first; the contracts in `src/shared/*`, `src/server/types.ts`, `src/client/engine/types.ts` and
+`src/client/render/protocol.ts` are **frozen** — implement against them, don't edit them. If a
+contract is genuinely wrong or missing something, work around it locally (an adapter in your own
+directory) and report the exact change you need.
+
+## Ground rules
+
+- Only write inside the paths your module owns (table below), plus tests under `test/<module>/`.
+- Don't modify `package.json`, `tsconfig.json`, `vite.config.ts` or the contracts. All dependencies
+  are installed; if you truly need another one, stop and report it.
+- Node runs TypeScript directly (type stripping): imports carry explicit `.ts` extensions, only
+  erasable syntax (no `enum`, `namespace`, parameter properties), `import type` for types.
+- Server code that imports Strudel must be run with `--import ./src/server/node-hooks.ts` (the npm
+  scripts do); worker threads call `registerStrudelHooks()` themselves and import Strudel
+  dynamically. Under vitest, `vitest.config.ts` aliases `@kabelsalat/web`.
+- Fixtures: `test/fixtures/catalog.small.json` (a valid `Catalog`) and `test/fixtures/snapshot.json`
+  (a valid `RoomSnapshot` with two synth-only sections exercising knobs, a continuing carried part, a
+  rewritten part, a crossfade and a pickup). Use them until the real catalog exists.
+- Typecheck with `npx tsc --noEmit` and look only at errors in your own paths (others are mid-build).
+  Run your tests with `npx vitest run test/<module>`.
+- Headless Chromium is available (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`, `@playwright/test`
+  1.56.1). From the sandbox, the browser cannot reach raw.githubusercontent.com directly (proxy CA);
+  route those requests through Node (`page.route` → `fetch` → `route.fulfill`) when you need samples,
+  or use synth-only material.
+- Comment only what's non-obvious; match the surrounding style. No `{@html}`/`innerHTML` for any
+  text that came from a listener or a composer.
+
+## Ownership and factories
+
+| Module | Owns | Must export |
+|---|---|---|
+| **strudel** | `src/strudel/**`, `src/server/check/**`, `scripts/gen-allowlist.ts` | see below |
+| **palette** | `palette/**`, `scripts/build-catalog.ts`, `scripts/render-audio.ts`, `test/fixtures/catalog.small.json` (may extend, must stay valid) | `palette/catalog.json`, vendored maps |
+| **room** | `src/server/main.ts`, `config.ts`, `log.ts`, `src/server/room/**`, `src/server/http/**`, `test/integration/**` | see below |
+| **conductor** | `src/server/conductor/**` | see below |
+| **composer** | `src/server/composer/**`, `src/cli/**` | see below |
+| **engine** | `src/client/engine/**` (except `types.ts`) | see below |
+| **lathe** | `src/client/render/**` (except `protocol.ts`) | see below |
+| **ui** | `src/client/index.html`, `src/client/main.ts`, `src/client/public/**`, `src/client/room/**`, `src/client/ui/**`, `e2e/**` | the app |
+
+### strudel
+
+```ts
+// src/strudel/catalog.ts — pure
+export function parseCatalog(json: unknown): Catalog;                         // validates shape, throws on error
+export interface SoundIndex {
+  get(id: string): CatalogSound | undefined;                                  // by registered id or alias
+  resolve(s: string, bank?: string): CatalogSound | undefined;                // applies bank like superdough: `${bank}_${s}`, lower-cased
+  ids(): string[];
+}
+export function createSoundIndex(catalog: Catalog): SoundIndex;
+
+// src/strudel/validate.ts — pure, isomorphic, ~1 ms
+export interface ValidateResult { ok: boolean; errors: Issue[]; warnings: Issue[]; knobsUsed: string[] }
+export function validatePart(code: string, opts: { knobs: string[] }): ValidateResult;
+
+// src/strudel/compile.ts — isomorphic (browser: new Function; Node worker: vm)
+export interface KnobBinder { (name: string): unknown /* a Pattern, e.g. signal(...) */ }
+export interface CompiledPart { pattern: any /* Strudel Pattern */; miniLocations: { start: number; end: number }[] }
+export function compilePart(code: string, opts: { knob: KnobBinder; evaluator?: (source: string, names: string[], values: unknown[]) => unknown }): CompiledPart;
+export function allowedScope(): Record<string, unknown>;                      // exactly the allowlisted values + m
+
+// src/strudel/analyze.ts — isomorphic
+export function analyzeSection(input: { parts: (CheckPartInput & { pattern: any })[]; bpm: number; scale: string | null; bars: number; index: SoundIndex }): {
+  parts: { id: string; analysis: PartAnalysis; digest: PartDigest; instrument: string; errors: Issue[]; warnings: Issue[] }[];
+  mix: MixAnalysis; fingerprint: SectionFingerprint; errors: Issue[]; warnings: Issue[];
+};
+
+// src/server/check/checker.ts
+export function createChecker(opts: { catalog: Catalog; poolSize?: number; timeoutMs?: number; maxQueue?: number }): Checker;
+```
+
+The allowlist is generated in Node from core + mini + tonal (plus `knob`, `m`) minus the documented
+denylist by `scripts/gen-allowlist.ts` into `src/strudel/allowlist.generated.json`; commit it. The
+security corpus (malicious + idiomatic) lives in `test/strudel/`.
+
+### room
+
+```ts
+// src/server/config.ts
+export function loadConfig(env: NodeJS.ProcessEnv, argv: string[]): ServerConfig;
+// src/server/log.ts
+export function createLogger(scope: string): Logger;
+// src/server/room/clock.ts
+export function serverNow(): number;                                          // performance.timeOrigin + performance.now()
+export function createRoomClock(opts: { timeline: Timeline; now?: () => number; timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } }): RoomClock;
+// src/server/room/crowd.ts
+export function createCrowd(opts: { broadcaster: Broadcaster; config: ServerConfig; store: Store; log: Logger; now?: () => number }): Crowd;
+// src/server/room/socket.ts
+export function createBroadcaster(io: Server): Broadcaster;                   // emits to the 'live' room / a listener's sockets
+export function attachRoom(io: Server, deps: { crowd: Crowd; conductor: Conductor; clock: RoomClock; config: ServerConfig; log: Logger }): void;
+// src/server/http/security.ts
+export function clientAddress(source: { remoteAddress?: string; headers: Record<string, string | string[] | undefined> }, trustProxy: number): string;
+export function securityHeaders(config: ServerConfig): RequestHandler;       // CSP etc. (strict in production)
+export function adminGuard(config: ServerConfig): RequestHandler;
+// src/server/http/api.ts
+export function createApiRouter(deps: { conductor: Conductor; crowd: Crowd; clock: RoomClock; config: ServerConfig; log: Logger }): Router;
+```
+
+`main.ts` wires everything in this order: config → log → store (`createStore`) → catalog (read
+`config.catalogPath`, `parseCatalog`) → checker → composers → clock → broadcaster → crowd →
+conductor (`start()`) → socket handlers → HTTP (static `/palette/*`, API, Vite middleware in dev or
+`dist/client` in production) → listen; graceful shutdown flushes the store and closes the checker.
+
+### conductor
+
+```ts
+// src/server/conductor/store.ts
+export function createStore(dataDir: string, log: Logger): Store;
+// src/server/conductor/context.ts
+export function buildTurnContext(input: TurnContextInput): TurnContext;      // pure; define TurnContextInput here
+// src/server/conductor/ledger.ts
+export function createLedger(opts: { store: Store; log: Logger }): Ledger;
+// src/server/conductor/conductor.ts
+export function createConductor(deps: {
+  clock: RoomClock; crowd: Crowd; checker: Checker; store: Store; log: Logger; config: ServerConfig; catalog: Catalog;
+  composers: { claude?: Composer; external: Composer; scripted: ScriptedComposer };
+  broadcaster: Broadcaster; ledger?: Ledger;
+}): Conductor;
+```
+
+### composer
+
+```ts
+// src/server/composer/reference.ts
+export function composerSystemPrompt(catalog: Catalog): string;              // stable, cacheable
+export function renderTurn(context: TurnContext): string;                     // the per-call user message
+// src/server/composer/claude.ts
+export function createClaudeComposer(opts: { config: ServerConfig; catalog: Catalog; log: Logger; client?: AnthropicLike }): Composer;
+// src/server/composer/external.ts
+export function createExternalComposer(opts: { log: Logger }): Composer;
+// src/server/composer/scripted.ts
+export function createScriptedComposer(opts: { catalog: Catalog; checker: Checker; log: Logger }): Promise<ScriptedComposer>;
+// src/cli/bside.ts — `npm run bside -- <command>`, talks to /api/composer/* (BSIDE_URL, BSIDE_ADMIN_TOKEN)
+```
+
+`AnthropicLike` is the minimal surface of the SDK client the driver uses, so tests can stub it.
+
+### engine
+
+```ts
+// src/client/engine/engine.ts
+export function createEngine(options: EngineOptions): Engine;
+// src/client/engine/clock-sync.ts
+export function startClockSync(probe: () => Promise<number>): ClockSync;
+```
+
+### lathe
+
+```ts
+// src/client/render/host.ts
+export const createLathe: CreateLathe;
+```
+
+### ui
+
+The Svelte app: `src/client/main.ts` mounts `ui/App.svelte`; `room/connection.ts` owns the socket
+(websocket transport, hello/welcome, schedule/mixer/crowd/notes → stores, clock probes, heartbeat,
+telemetry when sampled) and a **mock room** (`?mock` in the URL: plays `test/fixtures/snapshot.json`
+advancing on a local clock, with fake crowd frames) so the whole UI can be developed and screenshot
+without a server.
