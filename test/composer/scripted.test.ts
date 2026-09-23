@@ -9,7 +9,7 @@ import { resolvedIssues } from '../../src/server/conductor/accept.ts';
 import { resolveSection } from '../../src/server/conductor/compile.ts';
 import type { SectionCheck } from '../../src/shared/analysis.ts';
 import { createScriptedComposer } from '../../src/server/composer/scripted.ts';
-import type { CommitResult, PlanRequest, SectionSummary, TurnContext } from '../../src/shared/composer-api.ts';
+import type { CommitResult, CrowdSummary, PlanRequest, SectionSummary, TurnContext } from '../../src/shared/composer-api.ts';
 import { PERCUSSIVE_ROLES } from '../../src/shared/music.ts';
 import { PlanSchema, type Plan } from '../../src/shared/plan.ts';
 import { isPublicText } from '../../src/shared/text.ts';
@@ -253,6 +253,30 @@ describe('the scripted autopilot', () => {
         }
       }
     });
+
+    it('never joins the side only to wind it down: once it may be replaced and its time is up, a new side opens', () => {
+      const lib = { ensembles: LIBRARY, sounds: new Map() };
+      const tail = foreign(120, 'C:minor', 'Low Tide');
+      // Three carried sections already, so the autopilot moves on to its own material.
+      const history = ['Glass Harbour', 'Holding Pattern', 'Same River'].map((name, i) => ({ id: `h${i}`, name }));
+      const at = (ageMin: number, id: string) => turnContext({ now: tail, movement: { ...movementOf('Claude side', 120, 'C:minor'), ageMin }, history, expected: ['groove', 'build'], sectionsWanted: 2, id });
+      const joins = (candidates: ReturnType<typeof planCandidates>) => candidates.filter((c) => c.kind === 'continue');
+      for (const ageMin of [6, 7, 7.5, 8]) {
+        for (const mode of ['compose', 'fallback'] as const) {
+          const candidates = planCandidates(lib, at(ageMin, `late-${ageMin}`), mode);
+          const describe = candidates.map((c) => `${c.kind} ${c.opens?.id ?? ''} [${c.plan.sections.map((s) => s.role).join(' ')}]`).join('; ');
+          expect(candidates[0]!.kind, `${ageMin} min, ${mode}: ${describe}`).toBe('open');
+          for (const c of joins(candidates)) expect(c.plan.sections.map((s) => s.role), `${ageMin} min, ${mode}`).not.toContain('outro');
+        }
+      }
+      // Before the side may be replaced, an ensemble that joins takes a side road where an outro would go
+      // (the plan starts 48 bars ahead, so an outro would fall after the side's sixth minute).
+      const young = at(5.5, 'late-young');
+      const ahead = { ...young, clock: { ...young.clock, cycle: young.request.startCycle - 48 } };
+      const early = joins(planCandidates(lib, ahead, 'compose'));
+      expect(early.length).toBeGreaterThan(0);
+      for (const c of early) expect(c.plan.sections.map((s) => s.role)).not.toContain('outro');
+    });
   });
 
   it('opens a new side when asked, closing its own with an outro first', () => {
@@ -343,6 +367,69 @@ describe('the scripted autopilot', () => {
     const [first] = planCandidates({ ensembles: LIBRARY, sounds: new Map() }, ctx, 'compose');
     expect(first!.opens?.id).toBe('gamelan');
     expect(first!.plan.requestDecisions).toContainEqual(expect.objectContaining({ requestId: 'q9', decision: 'this-plan' }));
+  });
+});
+
+describe('the room steers the next side (the tour is a default, not a veto)', () => {
+  const lib = { ensembles: LIBRARY, sounds: new Map() };
+  const ens = (id: string) => LIBRARY.find((e) => e.id === id)!;
+  const pad = (intensity: number, brightness: number) => ({ intensity, brightness, turnout: 1, consensus: 1, effectiveVoices: 10, split: null });
+
+  /** A side of `id`, its movement's age and the crowd: ten listeners with the pad in the middle unless given. */
+  function sideOf(id: string, ageMin: number, crowd: Partial<CrowdSummary>, kind: 'section' | 'movement' = 'movement'): TurnContext {
+    const side = planCandidates({ ensembles: [ens(id)], sounds: new Map() }, turnContext({ kind: 'movement', id: `side-${id}` }), 'compose')[0]!.plan;
+    const m = side.movement!;
+    const now = summarize({ ...side.sections[0]!, role: ageMin >= 8 ? 'outro' : 'groove' }, 's1', 100);
+    return turnContext({ now, movement: { ...movementOf(m.name, m.bpm, m.scale), groove: m.groove, ageMin }, kind, sectionsWanted: 2, id: `steer-${id}`, crowd: { listeners: 10, pad: pad(0.5, 0.5), ...crowd } });
+  }
+  const opens = (ctx: TurnContext) => planCandidates(lib, ctx, 'compose')[0]!.opens!;
+  const ask = (text: string, support = 5): CrowdSummary['requests'] => [{ id: 'q1', text, support, supporters: support, ageSec: 10 }];
+
+  it('the pull pad chooses among the tour\'s next ensembles, from every side', () => {
+    for (const e of LIBRARY) {
+      const at = (intensity: number, brightness: number) => opens(sideOf(e.id, 8, { pad: pad(intensity, brightness) }));
+      expect(at(0.95, 0.5).mood.intensity, `${e.id}: pad intense vs calm`).toBeGreaterThan(at(0.05, 0.5).mood.intensity);
+      expect(at(0.5, 0.95).mood.brightness, `${e.id}: pad bright vs dark`).toBeGreaterThanOrEqual(at(0.5, 0.05).mood.brightness);
+      expect(at(0.95, 0.95).id, `${e.id}: pad in opposite corners`).not.toBe(at(0.05, 0.05).id);
+    }
+    const high = opens(sideOf('dub-techno', 8, { pad: pad(0.95, 0.95) }));
+    const low = opens(sideOf('dub-techno', 8, { pad: pad(0.05, 0.05) }));
+    expect(high.mood.intensity).toBeGreaterThan(low.mood.intensity);
+  });
+
+  it('mood words lean the next side, and the reply says what the side did', () => {
+    const words: [string, 'intensity' | 'brightness', number][] = [['calmer please', 'intensity', -1], ['more intense', 'intensity', 1], ['darker', 'brightness', -1], ['brighter', 'brightness', 1]];
+    let honoured = 0;
+    for (const e of LIBRARY) {
+      for (const [text, axis, sign] of words) {
+        const [first] = planCandidates(lib, sideOf(e.id, 8, { requests: ask(text) }), 'compose');
+        const opened = first!.opens!;
+        const decision = first!.plan.requestDecisions.find((d) => d.requestId === 'q1')!;
+        const went = (opened.mood[axis] - e.mood[axis]) * sign > 0;
+        expect(decision.decision, `${e.id} "${text}" → ${opened.id}: ${decision.publicReply}`).toBe(went ? 'this-plan' : 'declined');
+        if (went) {
+          honoured++;
+          expect(decision.sectionIndex).toBe(first!.plan.movement!.startsAtSection);
+          expect(decision.publicReply).toContain(opened.name);
+        }
+        expect(isPublicText(decision.publicReply)).toBe(true);
+      }
+    }
+    expect(honoured, `${honoured} of ${4 * LIBRARY.length}`).toBeGreaterThanOrEqual(3 * LIBRARY.length);
+  });
+
+  it('pencils a mood in while no side opens, and keeps it when the next one does', () => {
+    // A young side: the plan continues it, so the lean waits for the next side as a promise.
+    const young = planCandidates(lib, sideOf('motorik', 3, { requests: ask('can it get darker', 1) }, 'section'), 'compose')[0]!;
+    expect(young.opens).toBeNull();
+    const pencilled = young.plan.requestDecisions.find((d) => d.requestId === 'q1')!;
+    expect(pencilled).toMatchObject({ decision: 'next-movement', publicReply: 'Pencilled in: the next side leans darker.' });
+    // The tour alone would follow motorik with the brighter FM bells.
+    expect(opens(sideOf('motorik', 8, {})).mood.brightness).toBeGreaterThan(ens('motorik').mood.brightness);
+    const promises = [{ id: 'q1', decision: 'next-movement' as const, publicReply: pencilled.publicReply, ageSec: 300 }];
+    const [first] = planCandidates(lib, sideOf('motorik', 8, { promises }), 'compose');
+    expect(first!.opens!.mood.brightness).toBeLessThan(ens('motorik').mood.brightness);
+    expect(first!.plan.requestDecisions).toContainEqual(expect.objectContaining({ requestId: 'q1', decision: 'this-plan', publicReply: `As promised, darker: ${first!.opens!.name} opens this side.` }));
   });
 });
 

@@ -2,17 +2,20 @@
 // really are quieter and thinner, builds rise, drops land), a role never comes back arranged the
 // same way inside a movement, code variants and colour moves stay valid, and new sides rotate
 // through the library by groove family with legal tempo moves.
+import * as core from '@strudel/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createChecker } from '../../src/server/check/checker.ts';
 import { arrangeSection, barsFor, type PrevView } from '../../src/server/composer/arrange.ts';
 import { planCandidates, recognize, type AutopilotLibrary } from '../../src/server/composer/autopilot.ts';
 import { LIBRARY, type Ensemble } from '../../src/server/composer/library/index.ts';
+import { fillScale } from '../../src/server/composer/library/scale.ts';
 import { colourMoves, partVariants, variantCode } from '../../src/server/composer/variants.ts';
+import { compilePart } from '../../src/strudel/compile.ts';
 import { validateLibrary } from '../../src/server/composer/scripted.ts';
 import { balanceTrims } from '../../src/server/conductor/compile.ts';
 import { fingerprintDistance, type SectionCheck } from '../../src/shared/analysis.ts';
 import { PERCUSSIVE_ROLES, type SectionRole } from '../../src/shared/music.ts';
-import type { SectionPlan } from '../../src/shared/plan.ts';
+import { PlanSchema, type SectionPlan } from '../../src/shared/plan.ts';
 import type { Checker } from '../../src/server/types.ts';
 import { fullCatalog, memoryLog, movementOf, summarize, turnContext } from './fixtures.ts';
 
@@ -24,13 +27,38 @@ describe('code variants and colour moves', () => {
     expect(variantCode(bells, 'up')).toContain('scale("$SCALE5")');
     expect(variantCode(bells, 'down')).toContain('scale("$SCALE3")');
     expect(variantCode(bells, 'thin')).toMatch(/\.degradeBy\(0\.5\)$/);
-    expect(variantCode(bells, 'half')).toMatch(/\.slow\(2\)$/);
+    expect(variantCode(bells, 'half')).toContain('  .pan(perlin.range(0.25, 0.75))\n  .slow(2)\n  .delay(knob("wet"))\n');
+    const tick = ens('glass-drift').parts.find((p) => p.id === 'tick')!;
+    expect(variantCode(tick, 'half')).toBe(`${tick.code}\n  .slow(2)`);
     const sub = ens('glass-drift').parts.find((p) => p.id === 'sub')!;
     expect(partVariants(sub).map((v) => v.variant)).toEqual(['base']);
     const pad = ens('glass-drift').parts.find((p) => p.id === 'pad')!;
     expect(partVariants(pad).map((v) => v.variant).sort()).toEqual(['base', 'half', 'up']);
     const kick = ens('deep-house').parts.find((p) => p.id === 'kick')!;
     expect(partVariants(kick).map((v) => v.variant)).toEqual(['base']);
+  });
+
+  it('keep knob lanes in score bars, as the arranger plans them, in every variant (half speed included)', () => {
+    // A knob reads the time where knob() is applied: a hap at score bar b must read the lane at b (in
+    // `.lpf(knob("cut")).slow(2)` it would read b / 2).
+    const KNOB = 1e6;
+    let checked = 0;
+    for (const e of LIBRARY) {
+      for (const p of e.parts) {
+        if (!p.knobs?.length) continue;
+        for (const { variant, code } of partVariants(p)) {
+          const { pattern } = compilePart(fillScale(code, `${e.tonic}:${e.modes[0]}`), { knob: () => core.signal((t: number) => KNOB + Number(t)) });
+          const onsets = (pattern.queryArc(8, 24) as { whole: { begin: { valueOf(): number } }; value: Record<string, unknown>; hasOnset(): boolean }[]).filter((h) => h.hasOnset());
+          expect(onsets.length, `${e.id}.${p.id} ${variant}`).toBeGreaterThan(0);
+          for (const h of onsets) {
+            const knob = Object.values(h.value).find((v): v is number => typeof v === 'number' && v >= KNOB)!;
+            expect(knob - KNOB, `${e.id}.${p.id} ${variant} at ${h.whole.begin.valueOf()}`).toBeCloseTo(h.whole.begin.valueOf(), 6);
+          }
+          if (variant === 'half') checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(20);
   });
 
   it('moves to the relative mode on the same notes first, then to another mode on the same tonic', () => {
@@ -252,6 +280,7 @@ describe('new sides', () => {
     const sides = tour({ ensembles: LIBRARY, sounds: new Map() }, 12);
     const ids = sides.map((s) => s.ensemble.id);
     expect(new Set(ids).size, ids.join(' ')).toBe(ids.length);
+    for (const s of sides) expect(PlanSchema.safeParse(s.plan).error?.issues ?? [], s.ensemble.id).toEqual([]);
     for (let i = 1; i < sides.length; i++) {
       const [a, b] = [sides[i - 1]!, sides[i]!];
       expect(b.groove, `${a.ensemble.id} → ${b.ensemble.id}`).not.toBe(a.groove);
