@@ -11,3 +11,4 @@ npm-debug.log*
 .vscode/
 .idea/
 .claude/worktrees/
+test/_verify/
