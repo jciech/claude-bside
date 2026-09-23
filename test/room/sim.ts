@@ -1,8 +1,8 @@
 // A deterministic room for crowd tests: fake time, a recording broadcaster, an in-memory store,
 // listeners that heartbeat every 10 s, and a bar clock (120 BPM: 1 bar = 2 s).
 import type { Hello } from '../../src/shared/protocol.ts';
-import type { Broadcaster, CrowdSignal, Logger, ServerConfig, Store } from '../../src/server/types.ts';
-import { createCrowd, type CrowdRuntime } from '../../src/server/room/crowd.ts';
+import type { Broadcaster, CrowdRuntime, CrowdSignal, Logger, ServerConfig, Store } from '../../src/server/types.ts';
+import { createCrowd } from '../../src/server/room/crowd.ts';
 import { FakeTime } from './fake-time.ts';
 
 export const SEC_PER_BAR = 2;

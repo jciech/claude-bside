@@ -1,12 +1,22 @@
 // The crowd (docs/ARCHITECTURE.md §8): listener identity and weight, rate limits, the pull pad,
 // Stay/Move-on ballots, reactions, requests, fork votes and telemetry. It never calls the
-// conductor: the conductor polls tick() once per bar and reads summary()/pull(). The crowd emits
-// `crowd` frames (4 Hz) and per-listener `fork`, `requests` and system notes through the Broadcaster.
+// conductor: the conductor polls tick() once per bar, reads summary()/pull() and reports which
+// requests a composer saw (markShown). The crowd emits `crowd` frames (4 Hz) and per-listener
+// `fork`, `requests` and system notes through the Broadcaster; main.ts drives its lifecycle.
 import type { CrowdSummary } from '../../shared/composer-api.ts';
 import { RATE_LIMITS, REACTIONS, type EtchType, type Reaction, HEARTBEAT_STALE_MS } from '../../shared/music.ts';
-import { HEARD_CYCLE_WINDOW, type CrowdFrame, type ForkState, type KeepPending, type PadPoint } from '../../shared/protocol.ts';
+import {
+  HEARD_CYCLE_WINDOW,
+  type CrowdFrame,
+  type ForkState,
+  type KeepPending,
+  type NackReason,
+  type PadPoint,
+  type RequestAck,
+  type RequestError,
+} from '../../shared/protocol.ts';
 import { sanitizeRequestText } from '../../shared/text.ts';
-import type { Broadcaster, Crowd, CrowdSignal, JoinResult, Logger, Nack, ServerConfig, Store } from '../types.ts';
+import type { Broadcaster, CrowdRuntime, CrowdSignal, CrowdSource, Logger, Nack, ServerConfig, Store } from '../types.ts';
 import { STORE_KEYS } from '../types.ts';
 import { aggregateKeep, aggregatePad, capByNetwork, type KeepAggregate, type PadAggregate, type Voice } from './aggregate.ts';
 import { createBucket, take, type Bucket, type Rate } from './buckets.ts';
@@ -16,28 +26,9 @@ import { CROWD, roomSlewPerSec, roomTauSec } from './params.ts';
 import { RequestBook, type RequestRecord } from './requests.ts';
 import { TelemetryStore } from './telemetry.ts';
 
-export interface CrowdSource {
-  cycle(): number;
-  needle(): PadPoint;
-}
-
 export interface CrowdTimers {
   setInterval: typeof setInterval;
   clearInterval: typeof clearInterval;
-}
-
-export type RoomJoinResult = JoinResult & { telemetry: boolean };
-
-/** The crowd plus its lifecycle (owned by main.ts). */
-export interface CrowdRuntime extends Crowd {
-  join(socketId: string, hello: Parameters<Crowd['join']>[1], address: string, nowMs: number): RoomJoinResult | Nack;
-  /** Starts the 4 Hz pump: smoothing, `crowd` frames, coalesced fork tallies, housekeeping. */
-  start(source: CrowdSource): void;
-  stop(): void;
-  /** One pump step (what the timer runs every 250 ms). */
-  pump(): void;
-  /** Writes accrued listener trust to the store (also once a minute while running). */
-  persist(): void;
 }
 
 type BucketName = 'pad' | 'keep' | 'reaction' | 'request' | 'vote' | 'telemetry' | 'heartbeat';
@@ -108,7 +99,8 @@ interface PersistedIdentity {
   listeners: [id: string, audibleMs: number, seenAt: number][];
 }
 
-const nack = (event: string, reason: string): Nack => ({ event, reason });
+const nack = (event: string, reason: NackReason): Nack => ({ event, reason });
+const refuse = (error: RequestError): RequestAck => ({ ok: false, error });
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 const round = (x: number, digits = 3) => Math.round(x * 10 ** digits) / 10 ** digits;
 const MAX_REACTIONS = 50_000;
@@ -700,12 +692,12 @@ export function createCrowd(opts: {
 
     request(socketId, r, nowMs) {
       const l = owner(socketId);
-      if (!l) return { ok: false, error: 'hello-first' };
+      if (!l) return refuse('hello-first');
       const text = sanitizeRequestText(r.text);
-      if (!text) return { ok: false, error: 'empty' };
-      if (!eligible(l, nowMs)) return { ok: false, error: 'too-early' };
-      if (limited(l, 'request', nowMs)) return { ok: false, error: 'rate-limited' };
-      if (!take(roomRequests, CROWD.requests.roomRate, nowMs)) return { ok: false, error: 'room-busy' };
+      if (!text) return refuse('empty');
+      if (!eligible(l, nowMs)) return refuse('too-early');
+      if (limited(l, 'request', nowMs)) return refuse('rate-limited');
+      if (!take(roomRequests, CROWD.requests.roomRate, nowMs)) return refuse('room-busy');
       const { record } = book.submit(l.id, text, nowMs);
       sendCardsToSupporters([record]);
       return { ok: true, id: record.id };
@@ -798,8 +790,6 @@ export function createCrowd(opts: {
 
     summary(baseline, nowMs) {
       advance(nowMs);
-      const { rows, changed } = book.present(weightOfId(nowMs), nowMs);
-      if (changed.length) sendCardsToSupporters(changed);
       const split = lastPad.split;
       const toUnit = (v: number) => round((v + 1) / 2);
       return {
@@ -818,10 +808,15 @@ export function createCrowd(opts: {
         },
         keepVsMoveOn: round(keep),
         reactions: reactionStats(current?.startCycle ?? lastTick?.bar ?? 0, (lastTick?.bar ?? 0) + 1),
-        requests: rows,
+        requests: book.top(weightOfId(nowMs), nowMs),
         promises: book.promises(nowMs),
         forkResult: fork?.result && fork.closed && !fork.resolvesForSectionId ? forkResultOf(fork) : null,
       };
+    },
+
+    markShown(requestIds) {
+      const changed = book.markShown(requestIds, now());
+      if (changed.length) sendCardsToSupporters(changed);
     },
 
     pull() {
@@ -943,7 +938,6 @@ export function createCrowd(opts: {
       timer = null;
     },
 
-    pump,
     persist,
   };
 

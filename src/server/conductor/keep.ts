@@ -54,7 +54,7 @@ export function decideKeep(input: KeepInput): KeepOutcome {
 function stay({ current: s, next, timeline, nowMs }: KeepInput): KeepOutcome {
   const blocked = (b: Blocked): KeepOutcome => ({ ok: false, kind: 'extend', blocked: b });
   if (NO_STAY.has(s.role)) return blocked('role');
-  if (s.jumps.filter((j) => j.atBar > j.toBar).length >= MAX_STAYS) return blocked('locked');
+  if (s.jumps.filter((j) => j.atBar > j.toBar).length >= MAX_STAYS) return blocked('max');
   const jump: Jump = s.bars >= 2 * KEEP_PHRASE_BARS ? { atBar: s.bars - KEEP_PHRASE_BARS, toBar: s.bars - 2 * KEEP_PHRASE_BARS } : { atBar: s.bars, toBar: 0 };
   const play0 = jumpPlays(s.jumps).at(-1) ?? 0;
   const score0 = s.jumps.at(-1)?.toBar ?? 0;

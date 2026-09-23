@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { axisWords, composerLine, cueText, driftBars, driftText, keepPendingText, padWords, requestErrorText, scaleLabel, sideLetter } from '../../src/client/ui/format.ts';
-import type { ComposerStatus, KeepPending } from '../../src/shared/protocol.ts';
+import {
+  axisWords,
+  composerLine,
+  cueText,
+  driftBars,
+  driftText,
+  keepPendingText,
+  nackText,
+  padWords,
+  requestErrorText,
+  scaleLabel,
+  sideLetter,
+  type RequestErrorCode,
+} from '../../src/client/ui/format.ts';
+import { NACK_REASONS, REQUEST_ERRORS, type ComposerStatus, type KeepPending } from '../../src/shared/protocol.ts';
 
 describe('formatting', () => {
   it('names sides like records', () => {
@@ -49,6 +62,7 @@ describe('formatting', () => {
     expect(keepPendingText({ ...base, kind: 'extend', atCycle: 88 }, 60, 96)).toBe('Staying another phrase from bar 88');
     expect(keepPendingText({ ...base, kind: 'extend', blocked: 'role' }, 60, 96)).toMatch(/can’t repeat/);
     expect(keepPendingText({ ...base, blocked: 'next-not-ready' }, 60, null)).toMatch(/Claude is still lining up/);
+    expect(keepPendingText({ ...base, kind: 'extend', blocked: 'max' }, 60, 96)).toBe('Already held twice');
   });
 
   it('turns composer state into a line', () => {
@@ -60,6 +74,10 @@ describe('formatting', () => {
   });
 
   it('never shows raw error codes', () => {
-    for (const code of ['too-early', 'rate-limited', 'room-busy', 'something-new']) expect(requestErrorText(code)).not.toMatch(/-/);
+    const codes: RequestErrorCode[] = [...REQUEST_ERRORS, 'offline', 'timeout'];
+    for (const code of codes) expect(requestErrorText(code)).not.toMatch(/-/);
+    expect(requestErrorText('something-new' as RequestErrorCode)).toBe('That didn’t go through. Try again.');
+    for (const reason of NACK_REASONS) expect(nackText(reason) ?? '').not.toMatch(/-/);
+    expect(nackText('rate-limited')).toBe('Easy — give it a second.');
   });
 });

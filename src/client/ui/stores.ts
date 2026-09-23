@@ -3,7 +3,7 @@
 import { writable, type Writable } from 'svelte/store';
 import { EMPTY_MIXER, type MixerState, type MovementInfo, type SectionProgram } from '../../shared/program.ts';
 import type { EtchType } from '../../shared/music.ts';
-import type { ComposerStatus, CrowdFrame, ForkState, LinerNote, RequestCard, RoomSnapshot, ScheduleUpdate } from '../../shared/protocol.ts';
+import type { ComposerStatus, CrowdFrame, ForkState, LinerNote, NackReason, RequestCard, RoomSnapshot, ScheduleUpdate } from '../../shared/protocol.ts';
 import { sectionExtents } from '../../shared/schedule.ts';
 import type { Timeline } from '../../shared/timeline.ts';
 
@@ -20,7 +20,7 @@ export interface ScheduleState {
 
 export interface Nack {
   event: string;
-  reason: string;
+  reason: NackReason;
   at: number;
 }
 

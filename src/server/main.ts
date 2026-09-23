@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   await conductor.start();
   clock.start();
   crowd.start({ cycle: () => clock.cycle(), needle: () => conductor.needle() });
-  attachRoom(io, { crowd, conductor, clock, config, log: createLogger('socket') });
+  const detachRoom = attachRoom(io, { crowd, conductor, clock, config, log: createLogger('socket') });
 
   const app = createHttpApp({ conductor, crowd, clock, config, log: createLogger('http'), reference: () => composerSystemPrompt(catalog), paletteDir });
   const vite = await serveClient(app, config, httpServer);
@@ -126,6 +126,7 @@ async function main(): Promise<void> {
         log.error(`shutdown: ${name} failed`, { err });
       }
     };
+    await step('room', detachRoom);
     await step('crowd', () => crowd.stop());
     await step('conductor', () => conductor.stop());
     await step('clock', () => clock.stop());

@@ -87,11 +87,12 @@ export function createLogger(scope: string): Logger;
 // src/server/room/clock.ts
 export function serverNow(): number;                                          // performance.timeOrigin + performance.now()
 export function createRoomClock(opts: { timeline: Timeline; now?: () => number; timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } }): RoomClock;
-// src/server/room/crowd.ts
-export function createCrowd(opts: { broadcaster: Broadcaster; config: ServerConfig; store: Store; log: Logger; now?: () => number }): Crowd;
+// src/server/room/crowd.ts — a Crowd plus the lifecycle only main.ts drives (CrowdRuntime in types.ts)
+export function createCrowd(opts: { broadcaster: Broadcaster; config: ServerConfig; store: Store; log: Logger; now?: () => number; timers?: CrowdTimers }): CrowdRuntime;
 // src/server/room/socket.ts
+export function createRoomServer(http: HttpServer, config: ServerConfig): RoomServer;  // websocket only, same-origin, small messages
 export function createBroadcaster(io: Server): Broadcaster;                   // emits to the 'live' room / a listener's sockets
-export function attachRoom(io: Server, deps: { crowd: Crowd; conductor: Conductor; clock: RoomClock; config: ServerConfig; log: Logger }): void;
+export function attachRoom(io: RoomServer, deps: { crowd: Crowd; conductor: Conductor; clock: RoomClock; config: ServerConfig; log: Logger }): () => void;  // returns detach
 // src/server/http/security.ts
 export function clientAddress(source: { remoteAddress?: string; headers: Record<string, string | string[] | undefined> }, trustProxy: number): string;
 export function securityHeaders(config: ServerConfig): RequestHandler;       // CSP etc. (strict in production)
@@ -102,8 +103,22 @@ export function createApiRouter(deps: { conductor: Conductor; crowd: Crowd; cloc
 
 `main.ts` wires everything in this order: config → log → store (`createStore`) → catalog (read
 `config.catalogPath`, `parseCatalog`) → checker → composers → clock → broadcaster → crowd →
-conductor (`start()`) → socket handlers → HTTP (static `/palette/*`, API, Vite middleware in dev or
-`dist/client` in production) → listen; graceful shutdown flushes the store and closes the checker.
+conductor (`start()`) → `clock.start()` → `crowd.start({ cycle, needle })` → socket handlers
+(`attachRoom`, keeping its detach function) → HTTP (static `/palette/*`, API, Vite middleware in dev
+or `dist/client` in production) → listen.
+
+The crowd's lifecycle belongs to `main.ts`; the conductor only sees a `Crowd` and never starts or
+stops it, and the crowd never calls the conductor. `crowd.start(source)` runs the 250 ms pump: it
+advances smoothing, emits a `crowd` frame built from `source.cycle()` and `source.needle()` (the
+conductor's needle, passed in as a function) when it changed or every 5 s, coalesces fork tallies,
+and every 5 s does housekeeping (request expiry and "not seen" notes, forgetting listeners gone
+10 minutes, persisting listener trust once a minute). The conductor drives everything else: `tick()`
+once per bar, `summary()` for each turn context (a pure read) and `markShown()` when Claude or the
+external driver is actually handed a planning request.
+
+Graceful shutdown, each step guarded: detach the room handlers → `crowd.stop()` → `conductor.stop()`
+→ `clock.stop()` → `crowd.persist()` → `store.flush()` → `checker.close()` → Vite → close socket.io
+and the HTTP server.
 
 ### conductor
 

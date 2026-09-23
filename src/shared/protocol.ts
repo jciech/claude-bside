@@ -24,7 +24,8 @@ export interface KeepPending {
   needBars: number;
   /** Cycle where it will take effect, once decided. */
   atCycle: number | null;
-  blocked: null | 'min-length' | 'next-not-ready' | 'role' | 'locked';
+  /** 'max': this section was already extended the maximum number of times. */
+  blocked: null | 'min-length' | 'next-not-ready' | 'role' | 'locked' | 'max';
 }
 
 export interface CrowdFrame {
@@ -224,6 +225,51 @@ export type VoteInput = z.infer<typeof VoteSchema>;
 /** heardCycle must lie in [serverCycle - 8, serverCycle + 1]; otherwise the input is nacked. */
 export const HEARD_CYCLE_WINDOW = { behind: 8, ahead: 1 } as const;
 
+// ─── Refusals ───────────────────────────────────────────────────────────────────────────────────
+
+/** Why the server refused a client event (the `nack` payload's reason). */
+export const NACK_REASONS = [
+  // any event
+  'unknown-event',
+  'invalid',
+  'internal',
+  'hello-first',
+  'rate-limited',
+  // hello
+  'room-full',
+  'too-many-tabs',
+  // keep, react, telemetry
+  'heard-cycle',
+  'wrong-section',
+  'section-ended',
+  'not-sampled',
+  // vote
+  'no-fork',
+  'closed',
+  'invalid-option',
+  // a `request` sent without an ack is refused with a nack carrying its RequestError
+  'empty',
+  'too-early',
+  'room-busy',
+] as const;
+export type NackReason = (typeof NACK_REASONS)[number];
+
+export interface Nack {
+  event: string;
+  reason: NackReason;
+}
+
+/** Why a `request` was refused (its ack's `error`). */
+export const REQUEST_ERRORS = ['hello-first', 'invalid', 'empty', 'too-early', 'rate-limited', 'room-busy'] as const satisfies readonly NackReason[];
+export type RequestError = (typeof REQUEST_ERRORS)[number];
+export type RequestAck = { ok: true; id: string } | { ok: false; error: RequestError };
+
+/** Admission refusals before any listener state exists: the `connect_error` message. */
+export const CONNECT_ERRORS = ['server-full', 'too-many-connections', 'rate-limited'] as const;
+export type ConnectError = (typeof CONNECT_ERRORS)[number];
+
+export const isConnectError = (message: string): message is ConnectError => (CONNECT_ERRORS as readonly string[]).includes(message);
+
 export const CLIENT_EVENT_SCHEMAS = {
   hello: HelloSchema,
   heartbeat: HeartbeatSchema,
@@ -241,7 +287,7 @@ export interface ClientToServerEvents {
   pad: (payload: PadInput) => void;
   keep: (payload: KeepInput) => void;
   react: (payload: ReactInput) => void;
-  request: (payload: RequestInput, ack: (res: { ok: true; id: string } | { ok: false; error: string }) => void) => void;
+  request: (payload: RequestInput, ack: (res: RequestAck) => void) => void;
   vote: (payload: VoteInput) => void;
   telemetry: (payload: Telemetry) => void;
   /** NTP-style clock probe; the ack carries the server clock in ms. */
@@ -266,7 +312,7 @@ export interface ServerToClientEvents {
   requests: (cards: RequestCard[]) => void;
   composer: (status: ComposerStatus) => void;
   /** Rate-limit or validation feedback for this client's last input. */
-  nack: (payload: { event: string; reason: string }) => void;
+  nack: (payload: Nack) => void;
 }
 
 export const CLIENT_VERSION = '0.2.0';

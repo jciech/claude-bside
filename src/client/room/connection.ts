@@ -5,7 +5,16 @@
 import { io, type Socket } from 'socket.io-client';
 import { CATALOG_URL } from '../../shared/catalog.ts';
 import { HEARTBEAT_MS, type DockReaction } from '../../shared/music.ts';
-import { CLIENT_VERSION, type ClientToServerEvents, type Heartbeat, type PadPoint, type ServerToClientEvents } from '../../shared/protocol.ts';
+import {
+  CLIENT_VERSION,
+  isConnectError,
+  type ClientToServerEvents,
+  type ConnectError,
+  type Heartbeat,
+  type NackReason,
+  type PadPoint,
+  type ServerToClientEvents,
+} from '../../shared/protocol.ts';
 import { startClockSync } from '../engine/clock-sync.ts';
 import { createEngine } from '../engine/engine.ts';
 import type { ClockSync, Engine, EngineOptions } from '../engine/types.ts';
@@ -29,6 +38,9 @@ const REQUEST_TIMEOUT_MS = 8000;
 const WELCOME_WAIT_MS = 2000;
 const OFFLINE_AFTER_ERRORS = 3;
 const RETRY_REFUSED_MS = 5000;
+/** Refusals that mean the room (or this network's share of it) is at capacity, not a network fault. */
+const FULL_ON_CONNECT: ReadonlySet<ConnectError> = new Set(['server-full', 'too-many-connections']);
+const FULL_ON_HELLO: ReadonlySet<NackReason> = new Set(['room-full', 'too-many-tabs']);
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -190,9 +202,11 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
     stores.connection.set('reconnecting');
   });
 
-  socket.on('connect_error', () => {
+  socket.on('connect_error', (err) => {
     connectErrors++;
-    if (!everWelcomed || connectErrors >= OFFLINE_AFTER_ERRORS) stores.connection.set(connectErrors >= OFFLINE_AFTER_ERRORS ? 'offline' : 'connecting');
+    // Before the first welcome there is nothing playing to reconnect to: say the room is full.
+    if (!everWelcomed && isConnectError(err.message) && FULL_ON_CONNECT.has(err.message)) stores.connection.set('full');
+    else if (!everWelcomed || connectErrors >= OFFLINE_AFTER_ERRORS) stores.connection.set(connectErrors >= OFFLINE_AFTER_ERRORS ? 'offline' : 'connecting');
     // Refused by the server's admission caps: socket.io won't retry on its own.
     if (!socket.active && retryTimer === null) {
       retryTimer = timers.setTimeout(() => {
@@ -240,7 +254,7 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
   socket.on('composer', (status) => stores.composer.set(status));
   socket.on('nack', (nack) => {
     stores.nack.set({ ...nack, at: Date.now() });
-    if (nack.event === 'hello' && (nack.reason === 'room-full' || nack.reason === 'too-many-tabs')) stores.connection.set('full');
+    if (nack.event === 'hello' && FULL_ON_HELLO.has(nack.reason)) stores.connection.set('full');
   });
 
   // ─── Outgoing gestures ────────────────────────────────────────────────────────────────────────

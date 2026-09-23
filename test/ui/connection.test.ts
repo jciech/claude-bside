@@ -203,6 +203,21 @@ describe('room connection', () => {
     expect(get(t.stores.connection)).toBe('full');
   });
 
+  it('a first connection refused for capacity says the room is full; other refusals keep trying', () => {
+    const t = setup();
+    t.socket.fire('connect_error', new Error('rate-limited'));
+    expect(get(t.stores.connection)).toBe('connecting');
+    t.socket.fire('connect_error', new Error('server-full'));
+    expect(get(t.stores.connection)).toBe('full');
+    t.socket.open();
+    t.socket.fire('welcome', welcome());
+    expect(get(t.stores.connection)).toBe('live');
+    // Once the music is playing, a refused reconnect is a reconnect problem, not a full room.
+    t.socket.fire('disconnect');
+    t.socket.fire('connect_error', new Error('too-many-connections'));
+    expect(get(t.stores.connection)).toBe('reconnecting');
+  });
+
   it('sends the pad at most 4 times a second while dragging, and always the release', () => {
     const t = setup();
     t.socket.open();
