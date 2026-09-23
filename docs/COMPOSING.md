@@ -191,8 +191,9 @@ you get:
 - **a digest** measured from the events the code actually produces: events per bar, register,
   brightness, loudness, key fit, and which knobs change anything.
 
-The section as a whole also gets checked: mix density, an invalid scale, timeouts. The exit code is
-0 when every part passes and 1 otherwise, so the CLI works in scripts.
+The section as a whole is checked too (mix density, an invalid scale, timeouts); those issues come
+back in the result's own `errors` and `warnings`, and `ok` is true only when the section and every
+part pass. The exit code follows `ok` (0 or 1), so the CLI works in scripts.
 
 ## Common rejections
 
