@@ -1,7 +1,14 @@
-node_modules/
+node_modules
+dist/
+data/
+.e2e-data/
+test-results/
+playwright-report/
 .env
 .DS_Store
 *.log
 npm-debug.log*
 .vscode/
 .idea/
+.claude/worktrees/
+test/_verify/

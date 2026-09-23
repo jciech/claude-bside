@@ -1,219 +1,76 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## Quick Start Commands
+## What this is
+
+B-Side: a live listening room. A server-side **conductor** schedules **sections** of Strudel code
+written by a **composer** (Claude via the API, the scripted autopilot, or an external driver over
+HTTP); every listener's browser **performs** the same timeline in sync; the crowd steers. Read
+`docs/ARCHITECTURE.md` before changing anything structural — it is the design, and the typed
+contracts it points to are normative:
+
+- `src/shared/*` — music conventions, timeline + schedule rules (lock points, score time), hap
+  limits, plain-text rules, the Plan schema, section programs, the socket protocol, analysis types,
+  the composer API, the catalog.
+- `src/server/types.ts` — Checker, Composer, RoomClock, Crowd, Ledger, Conductor, Store.
+- `src/client/engine/types.ts` — the performer engine (its header comment is normative).
+- `src/client/render/protocol.ts` — the record renderer.
+
+`docs/DESIGN.md` is the visual identity; `docs/IMPLEMENTATION.md` maps modules to owners and
+factories.
+
+## Commands
 
 ```bash
-# Install dependencies
-npm install
-
-# Set API key (required)
-echo "ANTHROPIC_API_KEY=sk-ant-your-key-here" > .env
-
-# Run backend server (Terminal 1)
-npm run server      # Production
-npm run server:dev  # Development with auto-reload
-
-# Run frontend dev server (Terminal 2)
-npm run client      # Vite dev server on port 5173
-
-# Access the app
-# Open http://localhost:5173 in browser
+npm run dev          # server + Vite middleware on :3000 (one process)
+npm test             # vitest
+npm run test:e2e     # Playwright, scripted composer, no API key
+npm run typecheck
+npm run bside -- <status|context|reference|audition|commit|driver|plan|watch>
+npm run catalog      # rebuild palette/ from pinned sample repositories
 ```
 
-## Architecture Overview
+Node runs TypeScript directly (type stripping): imports carry `.ts` extensions; only erasable
+syntax (no `enum`, `namespace`, parameter properties); `import type` for types. Anything that
+imports `@strudel/core` in Node needs `--import ./src/server/node-hooks.ts` (the npm scripts do);
+worker threads call `registerStrudelHooks()` themselves.
 
-### Dual-Server Setup
+## Strudel facts that bite
 
-This project requires **TWO separate servers** running simultaneously:
+- **1 cycle = 1 bar.** `cps = bpm / 60 / 4`. Never `bpm / 60`.
+- Double-quoted strings are mini-notation; single-quoted strings are plain JS strings.
+- `.gain()` *replaces*; to scale use `.velocity()`, `.postgain()` or `.mul(gain(x))`.
+- `|` random choice is a parse error directly inside `<…>`; wrap it in `[…]`.
+- Chords use Strudel spelling: `^7` (not `maj7`), `m7`, `7sus`… `chord().voicing()`.
+- `.scale("C:minor")` with colons; `note("c3 e3").add(7)` is a silent no-op — do arithmetic on
+  `n(...)` before `.scale()`, or use `.transpose()`.
+- `queryArc` swallows query errors and returns `[]` — analysis queries use `pattern.query(State)`.
+- Cold samples drop their first hit; the engine preloads each section's sounds.
+- superdough has no limiter, `initAudio` never resumes the context and needs `maxPolyphony`;
+  the engine handles all three.
 
-1. **Backend (port 3000)**: Express + Socket.io
-   - Handles WebSocket connections
-   - Runs the AI agent (auto-starts on boot)
-   - Generates music patterns via Claude API
+The Strudel source for reference can live at `../strudel`. The GitHub mirror
+(`tidalcycles/strudel`) now only contains a pointer to Codeberg, but its history still has the full
+tree: `git clone https://github.com/tidalcycles/strudel ../strudel && git -C ../strudel checkout
+84efa66` (June 2025). The exact versions this project pins are on npm (`@strudel/core` 1.2.6,
+`@strudel/webaudio` 1.3.0, …); `npm pack` them to read their sources. If neither is available, ask
+the user to fetch it.
 
-2. **Frontend (port 5173)**: Vite dev server
-   - Serves the client application
-   - Proxies `/api` and `/socket.io` to backend
-   - Hot module reload for development
+## Security boundaries (don't weaken them casually)
 
-### Audio Architecture
+- Composer code reaches every listener's browser. It passes the static allowlist in
+  `src/strudel/allowlist.generated.json` on the server **and** the client; hap values are clamped by
+  `sanitizeModelValue`; the production CSP restricts where anything can connect.
+- Listener and composer text is plain text (`src/shared/text.ts`): never `{@html}` / `innerHTML`.
+- Listener requests reach the composer only inside an untrusted-data block; client telemetry only
+  as corroborated error codes.
+- The composer API needs `BSIDE_ADMIN_TOKEN` in production.
 
-**Critical:** Uses a hidden `<strudel-editor>` web component to handle audio playback.
+## Code style
 
-The `<strudel-editor>` component (from CDN: `https://unpkg.com/@strudel/repl@latest`):
-- Positioned off-screen: `position: fixed; top: -9999px`
-- Provides a `StrudelMirror` instance via `element.editor`
-- Handles all Web Audio initialization internally
-
-**AudioManager** (`public/src/audioManager.js`):
-- Waits for `element.editor` to be available
-- Handles `editor.prebaked` promise (default samples, may fail with 404)
-- Loads custom samples after initialization:
-  - `samples('github:switchangel/breaks')` - drum breaks and percussion
-  - `samples('github:switchangel/pad')` - atmospheric pad sounds
-- Pattern playback: Set `editor.code`, call `editor.evaluate()`, then `editor.repl.start()`
-- Must resume AudioContext if suspended: Check `state === 'suspended'` and call `ctx.resume()`
-
-**Sample Loading:**
-- The `samples()` function is globally available after strudel-editor initializes
-- Custom samples are loaded in `loadCustomSamples()` after editor is ready
-- Falls back to evaluating samples() as code if not globally available
-- Sample maps load immediately; audio files load lazily on first play
-
-### Agent Loop and Queue System
-
-The music uses a **queue-based architecture** with two independent loops:
-
-1. **Queue Processor** (`server/queueProcessor.js`):
-   - Rhythm-aware REPL update loop
-   - Checks every bar boundary (based on BPM)
-   - Transitions patterns on musical boundaries
-   - Falls back to looping if queue is empty
-
-2. **Music Agent** (`server/agent.js`):
-   - Claude generation loop (every 20 seconds)
-   - Maintains queue of 4-6 patterns ahead
-   - Generates queue operations (add, insert, remove, replace, clear)
-   - Responds to feedback by modifying queue
-   - **Style memory**: Tracks community preferences
-
-**Musical Timing:**
-- Default: 120 BPM, 4/4 time signature
-- Patterns specify duration in **bars** (not seconds)
-- Bar duration = `(60000 / BPM) * 4` milliseconds
-- All transitions happen on bar boundaries
-
-### Key Dependencies
-
-- **@strudel/\***: Music pattern engine (TidalCycles in JS)
-- **@anthropic-ai/sdk**: Claude API for pattern generation
-- **socket.io**: Real-time bi-directional communication
-- **Vite**: Frontend bundler (needed for ES module imports)
-
-## Development Gotchas
-
-### npm vs Other Package Managers
-
-This project uses **npm** with a custom registry config in `.npmrc`:
-```
-# .npmrc
-registry=https://registry.npmjs.org/
-```
-
-The lockfile is `package-lock.json`. Don't use yarn/pnpm unless you regenerate lockfiles.
-
-### Environment Variables
-
-**Required:**
-- `ANTHROPIC_API_KEY` - Must be set or audio generation fails with 401 errors
-
-The server uses `dotenv/config` auto-import at the top of `server/index.js`.
-
-### Port Conflicts
-
-- Backend must run on **3000** (hardcoded in Vite proxy)
-- Frontend dev server on **5173** (Vite default)
-- If ports are taken, you'll need to update `vite.config.js` proxy settings
-
-### Strudel Pattern Syntax
-
-Patterns use Strudel's mini-notation (Tidal Cycles syntax). Both synthesis and samples are supported:
-
-**Synthesis** (always available, instant):
-```javascript
-note("c3 e3 g3").s("triangle")
-note("c1 c2").s("square").lpf(200)
-stack(note("c3*4").s("sine"), note("c5 e5").s("sawtooth"))
-```
-
-**Samples** (loaded from switchangel repos):
-```javascript
-s("breaks:7").loopAt(2).fit()       // Drum breaks
-s("swpad:0").slow(4).room(0.8)      // Atmospheric pads
-```
-
-**Hybrid** (mix synthesis and samples):
-```javascript
-stack(
-  s("breaks:2*4"),
-  note("c2 e2 g2").s("sine").lpf(400)
-)
-```
-
-**Available Sample Banks:**
-- `breaks:N` - Drum breaks and percussion loops from switchangel/breaks
-- `swpad:N` - Atmospheric pad sounds from switchangel/pad
-- Built-in synths: "triangle", "square", "sawtooth", "sine"
-
-### Agent Configuration
-
-Located in `server/agent.js`:
-```javascript
-this.GENERATION_INTERVAL = 20000; // Check queue every 20 seconds
-this.MIN_QUEUE_LENGTH = 3; // Minimum patterns to maintain
-this.TARGET_QUEUE_LENGTH = 5; // Target queue length
-this.MAJOR_CHANGE_FEEDBACK_THRESHOLD = 2; // Feedback for queue regeneration
-```
-
-Located in `server/index.js`:
-```javascript
-tempo: {
-  bpm: 120,
-  beatsPerBar: 4
-}
-```
-
-**Pattern Duration Calculation:**
-```javascript
-duration_ms = bars * beatsPerBar * (60000 / bpm)
-// Example: 8 bars at 120 BPM = 8 * 4 * 500 = 16000ms (16 seconds)
-```
-
-### WebSocket Connection
-
-Frontend connects to backend via Socket.io:
-- In dev: Vite proxies `/socket.io` → `http://localhost:3000`
-- Client must connect AFTER backend is running
-- Check browser console for connection errors
-
-## Code Style
-
-**Commenting Philosophy:**
-- Avoid redundant comments that just restate the code
-- Only comment non-obvious implementation details or workarounds
-- Function names should be self-explanatory
-- Keep code clean and minimal
-
-Example - avoid:
-```javascript
-// Set the code
-this.editor.code = code;  // Sets code property
-```
-
-Instead, only comment the non-obvious:
-```javascript
-// Wait for prebake, replace if it fails (404 on uzu-drumkit.json)
-this.editor.prebaked = Promise.resolve();
-```
-
-## Project Structure
-
-```
-claude-bside/
-├── server/               # Backend (Node.js)
-│   ├── index.js         # Express + Socket.io + auto-start agent
-│   ├── agent.js         # Music generation loop
-│   ├── claude.js        # Claude API calls
-│   └── memory.js        # Style preference tracker
-├── public/              # Frontend (Vite serves this)
-│   ├── src/
-│   │   ├── main.js      # Entry point + WebSocket client
-│   │   └── audioManager.js  # Strudel audio wrapper
-│   ├── index.html       # Landing page + main UI
-│   └── style.css
-├── vite.config.js       # Vite config with proxy
-└── .env                 # API keys (gitignored)
-```
-- You can read the opensource strudel.cc repository under ../strudel. If its not there, you might want to ask the user to fetch it for you so you can use it to understand the strudel APIs better.
+- Comment only non-obvious implementation details or workarounds; names should explain the rest.
+- Keep modules inside their ownership boundaries (`docs/IMPLEMENTATION.md`); change a contract
+  deliberately, in one place, and update its consumers and the docs together.
+- Tests next to the behaviour they pin: `test/<module>/`. Browser behaviour is verified with
+  Playwright against `/opt/pw-browsers` Chromium in this environment.

@@ -1,0 +1,10 @@
+{
+ "_base": "https://raw.githubusercontent.com/switchangel/breaks/13784b105c6f55eb20653a510f70e6df1f1b6e32/",
+ "breaks": [
+  "10_break.wav",
+  "11_break.wav",
+  "12_break.wav",
+  "13_break.wav",
+  "14_break.wav"
+ ]
+}

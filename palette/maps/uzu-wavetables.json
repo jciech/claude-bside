@@ -1,0 +1,10 @@
+{
+ "_base": "https://raw.githubusercontent.com/tidalcycles/uzu-wavetables/3432ce3f35746356728f9bea3fea4b76624f98cd/",
+ "wt_digital": [
+  "wt_digital/wt_bad_day.wav",
+  "wt_digital/wt_basique.wav",
+  "wt_digital/wt_crickets.wav",
+  "wt_digital/wt_curses.wav",
+  "wt_digital/wt_echoes.wav"
+ ]
+}

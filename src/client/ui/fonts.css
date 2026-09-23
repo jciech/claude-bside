@@ -1,0 +1,6 @@
+/* Self-hosted variable fonts (@fontsource-variable), only the axes and styles the design uses:
+   Anybody (weight and width), Newsreader italic, JetBrains Mono. Every subset is a separate woff2
+   fetched only for the characters it covers (never inlined: see vite.config.ts). */
+@import '@fontsource-variable/anybody/standard.css';
+@import '@fontsource-variable/newsreader/wght-italic.css';
+@import '@fontsource-variable/jetbrains-mono/wght.css';
