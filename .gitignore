@@ -1,4 +1,9 @@
 node_modules/
+dist/
+data/
+.e2e-data/
+test-results/
+playwright-report/
 .env
 .DS_Store
 *.log
