@@ -21,6 +21,12 @@ export interface ProgramPart {
   orbit: number;
   /** Fader 0..1 before automation, macros and trims. */
   level: number;
+  /**
+   * Balance trim in dB toward the role's loudness target (0 when the sound's level is unmeasured).
+   * It belongs to this instance across its whole window: a rewritten same-id part crossfading against
+   * itself keeps each instance's own trim, and it holds from the instance's first sound.
+   */
+  trimDb: number;
   /** Score bars. enterBar < 0 is a pickup over the previous section's end. */
   enterBar: number;
   exitBar: number | null;
@@ -108,8 +114,6 @@ export interface MixerKeyframe {
   rampBars: number;
   /** Room pull mapped to macros, each -1..1. */
   macros: { brightness: number; intensity: number };
-  /** Balance/safety trims in dB keyed by part id (applies to the part instance sounding then). */
-  trimsDb: Record<string, number>;
 }
 
 /**
@@ -134,7 +138,6 @@ export const NEUTRAL_KEYFRAME: MixerKeyframe = {
   atCycle: 0,
   rampBars: 1,
   macros: { brightness: 0, intensity: 0 },
-  trimsDb: {},
 };
 
 export const EMPTY_MIXER: MixerState = { rev: 0, prev: null, next: NEUTRAL_KEYFRAME, safety: null };

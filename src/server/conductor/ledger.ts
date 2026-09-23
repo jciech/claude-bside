@@ -1,7 +1,8 @@
 // The ledger: one row per section at its bar 0 (revoked sections never enter), closed with the
 // crowd's verdict when it ends. Append-only JSONL (`ledger.v1`), replayed at boot into an
 // in-memory window of the last 2 hours. Rows by the scripted autopilot or played to nobody
-// (audible = 0) are history, but never count toward cooldown or similarity.
+// (audible = 0) are history, but never count toward cooldown or similarity. Only one section plays
+// at a time, so a row still open when a later one starts (a restart) is closed then.
 import { fingerprintDistance, type SectionFingerprint } from '../../shared/analysis.ts';
 import { BLOCKED_SOUNDS, type Catalog, type CatalogSound, type SoundCategory } from '../../shared/catalog.ts';
 import { STORE_KEYS, type CrateItem, type Ledger, type LedgerRow, type Logger, type Store } from '../types.ts';
@@ -20,6 +21,8 @@ const SAME_BEAT = 0.1;
 const LOVED_Z = 2;
 const CRATE_MAX_SECONDS = 20;
 const MACHINE_FRESH_MS = 60 * MIN;
+/** A row left open by a restart ends at the next row's start, but no later than this after its own. */
+const MAX_OPEN_MS = 10 * MIN;
 
 type Entry = { t: 'row'; row: LedgerRow } | { t: 'close'; sectionId: string; endedAtWallMs: number; crowd: LedgerRow['crowd'] };
 
@@ -106,7 +109,16 @@ export function createLedger(opts: { store: Store; log: Logger; now?: () => numb
 
   function prune(nowWallMs: number): void {
     const cutoff = nowWallMs - LEDGER_WINDOW_MS;
-    while (rows.length && endOf(rows[0]!, nowWallMs) < cutoff) byId.delete(rows.shift()!.sectionId);
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (endOf(rows[i]!, nowWallMs) >= cutoff) continue;
+      byId.delete(rows[i]!.sectionId);
+      rows.splice(i, 1);
+    }
+  }
+
+  function closeLeftOpen(row: LedgerRow, nextStartedAtWallMs: number): void {
+    row.endedAtWallMs = Math.min(nextStartedAtWallMs, row.startedAtWallMs + MAX_OPEN_MS);
+    store.append<Entry>(STORE_KEYS.ledger, { t: 'close', sectionId: row.sectionId, endedAtWallMs: row.endedAtWallMs, crowd: row.crowd });
   }
 
   function insert(row: LedgerRow): void {
@@ -126,6 +138,10 @@ export function createLedger(opts: { store: Store; log: Logger; now?: () => numb
       if (row) Object.assign(row, { endedAtWallMs: e.endedAtWallMs, crowd: e.crowd });
     }
   }
+  rows.forEach((row, i) => {
+    const next = rows[i + 1];
+    if (next && row.endedAtWallMs === null) closeLeftOpen(row, next.startedAtWallMs);
+  });
   prune(wallNow());
   if (rows.length) log.info('ledger: restored', { rows: rows.length });
 
@@ -148,6 +164,7 @@ export function createLedger(opts: { store: Store; log: Logger; now?: () => numb
   return {
     record(row: LedgerRow): void {
       if (byId.has(row.sectionId)) return;
+      for (const r of rows) if (r.endedAtWallMs === null && r.startedAtWallMs <= row.startedAtWallMs) closeLeftOpen(r, row.startedAtWallMs);
       insert({ ...row });
       store.append<Entry>(STORE_KEYS.ledger, { t: 'row', row });
       prune(row.startedAtWallMs);

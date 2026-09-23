@@ -91,14 +91,6 @@ export function macrosAt(state: MixerState, cycle: number): Macros {
   };
 }
 
-/** Balance/safety trim for a part id, interpolated in dB like the macros. */
-export function trimDbAt(state: MixerState, partId: string, cycle: number): number {
-  const { prev, next } = state;
-  const from = (prev ?? next).trimsDb[partId] ?? 0;
-  const to = next.trimsDb[partId] ?? 0;
-  return from + (to - from) * rampPosition(next, cycle);
-}
-
 /**
  * The temporary safety trim, ramping in over the bar after fromCycle and out over the bar before
  * untilCycle, so a later update that clears it (the server drops it at untilCycle) never jumps.

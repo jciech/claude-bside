@@ -5,7 +5,7 @@
 // values an instance plays with at a cycle (Engine.levelAt / knobValues).
 import { scoreBarAt } from '../../shared/schedule.ts';
 import type { MixerState } from '../../shared/program.ts';
-import { dbToGain, intensityDb, knobAt, levelAt, macrosAt, trimDbAt } from './knobs.ts';
+import { dbToGain, intensityDb, knobAt, levelAt, macrosAt } from './knobs.ts';
 import type { InstanceSpec } from './score.ts';
 import { inWindowAt, lastExitBefore } from './window.ts';
 
@@ -37,7 +37,7 @@ function soundingGain(inst: InstanceSpec, c: number, mixer: MixerState): number 
   let g = instanceLevelAt(inst, c);
   if (inst.fadeIn && c < inst.fadeIn.at + inst.fadeIn.bars) g *= Math.sin((Math.PI / 2) * unit(c, inst.fadeIn.at, inst.fadeIn.bars));
   if (inst.fadeOut && c >= inst.fadeOut.at) g *= Math.cos((Math.PI / 2) * unit(c, inst.fadeOut.at, inst.fadeOut.bars));
-  const db = intensityDb(inst.part.role, macrosAt(mixer, c).intensity) + trimDbAt(mixer, inst.part.id, c);
+  const db = intensityDb(inst.part.role, macrosAt(mixer, c).intensity) + inst.part.trimDb;
   return g * dbToGain(db);
 }
 

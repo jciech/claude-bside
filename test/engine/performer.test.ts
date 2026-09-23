@@ -104,7 +104,7 @@ describe('performer on the fixture', () => {
   });
 
   it('follows the brightness macro (knob follow + per-hap cutoff scaling)', () => {
-    const mixer: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0.5, intensity: 0 }, trimsDb: {} }, safety: null };
+    const mixer: MixerState = { rev: 1, prev: null, next: { atCycle: 0, rampBars: 1, macros: { brightness: 0.5, intensity: 0 } }, safety: null };
     const { performer, score } = setup([sectionA, sectionB], mixer);
     const lead = play(performer, score, 24, 25).filter((h) => h.inst.part.id === 'lead');
     expect(lead[0]!.value.cutoff).toBeCloseTo(1800 * 2 ** 0.5);
