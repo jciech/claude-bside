@@ -9,7 +9,7 @@ import {
   cpsAtCycle,
 } from '../src/shared/timeline.ts';
 import { bpmToCps, cpsToBpm } from '../src/shared/music.ts';
-import { clampHapValue, findLimitViolations } from '../src/shared/limits.ts';
+import { sanitizeModelValue, findLimitViolations } from '../src/shared/limits.ts';
 import { PlanSchema, planToolSchema } from '../src/shared/plan.ts';
 
 describe('music conventions', () => {
@@ -62,12 +62,30 @@ describe('timeline', () => {
 });
 
 describe('limits', () => {
-  it('clamps loud and dangerous values and strips engine-owned keys', () => {
-    const v = clampHapValue({ s: 'bd', gain: 50, roomsize: 100, orbit: 7, cps: 3, cutoff: 800 });
-    expect(v).toEqual({ s: 'bd', gain: 1, roomsize: 8, cutoff: 800 });
+  it('clamps loud and dangerous values and strips engine-owned and structured keys', () => {
+    const v = sanitizeModelValue({
+      s: 'bd',
+      gain: 50,
+      roomsize: 100,
+      orbit: 7,
+      cps: 3,
+      cutoff: 800,
+      fmi13: 500,
+      distortvol: 20,
+      FX: [{ gain: 5 }],
+      lfo: { 0: { control: 'postgain' } },
+      source: () => 0,
+    });
+    expect(v).toEqual({ s: 'bd', gain: 1, roomsize: 6, cutoff: 800, fmi13: 12, distortvol: 1 });
   });
-  it('reports violations', () => {
-    expect(findLimitViolations({ gain: 2, pan: -0.5 }).map((v) => v.key)).toEqual(['gain', 'pan']);
+  it('reports violations with reasons', () => {
+    const v = findLimitViolations({ gain: 2, pan: -0.5, orbit: 3, FX: [] });
+    expect(v.map((x) => [x.key, x.reason])).toEqual([
+      ['gain', 'range'],
+      ['pan', 'range'],
+      ['orbit', 'engine-owned'],
+      ['FX', 'engine-owned'],
+    ]);
   });
 });
 
@@ -76,6 +94,8 @@ describe('plan schema', () => {
     id: 'kick',
     role: 'kick',
     code: 's("bd*4").bank("RolandTR909")',
+    restart: false,
+    chromatic: false,
     level: 0.8,
     enterBar: 0,
     exitBar: null,
@@ -89,6 +109,7 @@ describe('plan schema', () => {
     bars: 16,
     bpm: 120,
     tempoRampBars: 0,
+    tempoRampAt: 'start',
     scale: 'D:dorian',
     chords: null,
     targets: {
@@ -107,6 +128,7 @@ describe('plan schema', () => {
     movement: null,
     fork: null,
     requestDecisions: [],
+    motifs: [],
     announcement: null,
     rationale: 'test',
   };

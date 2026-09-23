@@ -66,13 +66,17 @@ export const SECTION_LENGTHS = [8, 16, 24, 32, 48, 64] as const;
 export type SectionLength = (typeof SECTION_LENGTHS)[number];
 
 /**
- * How a section begins. All are rendered deterministically by every client's performer:
- * - cut: previous parts stop at bar 0 (tails ring out on their orbits)
- * - crossfade: previous section keeps playing for `bars`, fading out while new parts fade in
- * - riser: an engine-owned noise riser plays over the last `bars` of the previous section
- * - breath: the previous section is muted for its final `bars` (a held breath before the downbeat)
+ * How a section begins. All are rendered deterministically by every client's performer, and never
+ * apply to parts that continue across the boundary (carried parts are one uninterrupted instance):
+ * - cut: previous parts end at bar 0 (short release: 1 beat for percussion, 1 bar otherwise)
+ * - crossfade (≤ 8 bars): previous parts keep playing (their last phrase loops) and fade out while
+ *   new parts fade in; if the scales differ, outgoing pitched parts cut instead
+ * - riser (pre-roll): an engine-owned noise riser sweeps up over the last `bars` before bar 0
+ * - breath (pre-roll, ≤ 2 bars): the previous section falls silent for its final `bars`
+ * - filter (pre-roll): outgoing parts are low-passed shut over the last `bars`; incoming parts'
+ *   high-pass opens over the first `bars / 2`
  */
-export const TRANSITION_TYPES = ['cut', 'crossfade', 'riser', 'breath'] as const;
+export const TRANSITION_TYPES = ['cut', 'crossfade', 'riser', 'breath', 'filter'] as const;
 export type TransitionType = (typeof TRANSITION_TYPES)[number];
 
 export const GROOVES = [
@@ -83,7 +87,7 @@ export const GROOVES = [
   'double-time',
   'swing',
   'shuffle',
-  'odd-meter',
+  'polymeter',
   'free',
 ] as const;
 export type Groove = (typeof GROOVES)[number];
@@ -91,9 +95,32 @@ export type Groove = (typeof GROOVES)[number];
 export const ARC_SHAPES = ['plateau', 'wave', 'ramp-up', 'ramp-down', 'peak-and-release', 'terraced'] as const;
 export type ArcShape = (typeof ARC_SHAPES)[number];
 
-/** Listener reactions. `harsh` also triggers a conductor safety trim when enough of the room agrees. */
+/**
+ * Reaction kinds tracked per section. The dock sends `fire` and `harsh` directly; `vibe` and
+ * `bored` are recorded by the server when a listener presses Stay (keep +1) or Move on (keep −1).
+ * `harsh` also triggers a conductor safety trim when enough of the room agrees.
+ */
 export const REACTIONS = ['fire', 'vibe', 'bored', 'harsh'] as const;
 export type Reaction = (typeof REACTIONS)[number];
+export const DOCK_REACTIONS = ['fire', 'harsh'] as const;
+export type DockReaction = (typeof DOCK_REACTIONS)[number];
+/** What can be etched into the record rim: reactions plus Stay/Move-on presses. */
+export type EtchType = Reaction | 'stay' | 'move';
+
+/** Token buckets shared by the server (enforcement) and the UI (cooldown rings). */
+export const RATE_LIMITS = {
+  reaction: { perSec: 1 / 3, burst: 5 },
+  keep: { perSec: 1 / 2, burst: 3 },
+  pad: { perSec: 4, burst: 8 },
+  request: { perSec: 1 / 60, burst: 1 },
+  vote: { perSec: 1, burst: 3 },
+  telemetry: { perSec: 1 / 4, burst: 2 },
+  clock: { perSec: 2, burst: 20 },
+} as const;
+
+/** Heartbeat cadence; a listener with no heartbeat for HEARTBEAT_STALE_MS is not audible. */
+export const HEARTBEAT_MS = 10_000;
+export const HEARTBEAT_STALE_MS = 25_000;
 
 /** A value that moves from `start` (bar 0) to `end` (last bar), both in 0..1. */
 export interface Span {

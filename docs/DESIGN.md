@@ -12,7 +12,7 @@ accumulates into a texture.
 | Side | A movement (6–20 min). Side A, B, C… per session | `MovementInfo.side` |
 | Track | A section, with Claude's title | `SectionProgram.name` |
 | Groove | The inward spiral; 1 revolution = 1 bar | cycle → angle |
-| Needle | Where the music is — on the record *and* on the pull pad | `now()`, `CrowdFrame.needle` |
+| Needle | Where the music is heading — on the record *and* on the pull pad (the section's target at this bar + measured offset + the fast lane) | `now()`, `CrowdFrame.needle` |
 | Pull | Where the room leans | `CrowdFrame.pull` |
 | Pre-echo | Ghosts of the next bar approaching the needle | `engine.query()` lookahead |
 | Land | The glossy gap between tracks | section boundaries |
@@ -148,7 +148,7 @@ Downgrade one tier when worker p95 > 20 ms for 3 s, > 2 long tasks in 10 s, or a
 upgrade after 60 s healthy. The user's choice always wins. A flash limiter is always on: ≤ 2
 large-area luminance transitions per second, drops ≤ 1 per 2 s, no saturated full-field red.
 
-The renderer never shares a thread with the audio scheduler (measured: main-thread rendering cost
+The renderer is clocked by `ClockSample { epochMs, cycle, cps }` (epoch time, because a worker's `performance.now()` has its own origin), sent on every timeline change, tempo boundary, clock step and at least once a bar. It never shares a thread with the audio scheduler (measured: main-thread rendering cost
 586–695 ms/s and caused scheduler skips under throttling; in a worker, 53 ms/s and zero skips).
 
 ## Layout
@@ -186,12 +186,12 @@ default), dock in the thumb zone respecting the safe area.
 | `TopBar` | brand mark, track + side, bpm · key · bar, presence, volume, settings |
 | `Record` | canvas host for the Lathe worker + DOM label overlay (title, side) |
 | `NowPlayingSummary` | visually hidden text alternative (track, key, BPM, each part's instrument and state), key `?` |
-| `Legend` / `VoiceChip` | parts at a glance; swatch opacity follows loudness; toggles a **local** mute (personal mix, never shared) |
+| `Legend` / `VoiceChip` | parts at a glance (keyed by instance, so a crossfade shows both); swatch opacity follows loudness; toggles a **local** mute via `engine.setLocalMute` (personal mix, never shared) |
 | `CodeView` / `PartRow` | one row per part: gutter (glyph, name, meter) + `id: code`; sounding mini-notation atoms lit in the voice colour (background, `#0B0A0E` text), control atoms underlined; highlights last `max(duration, 120 ms)`; fresh ink; "Copy" and "Open in strudel.cc"; follow mode |
 | `LinerNotes` / `NoteCard` | a timeline, not toasts; the current note Newsreader italic with a clay rule; past notes smaller with bar stamps; "↳ answering …" in clay-2 |
-| `CueChip` | "drop in 6 bars" from the committed schedule (next section role/start) |
-| `PullPad` | others as identity-hue dots that school gently; you as a white ring; the pull as a soft field + dashed ring; the needle as a clay dot with a trail joined to the pull by a dashed tension line; status line in words; keyboard = two sliders with verbal `aria-valuetext`; pointer drag with `touch-action:none`, tap-to-place; sends ≤ 1 Hz while dragging + once on release |
-| `ReactionDock` | Yes (🔥 `fire`), Stay (`keep +1`), Move on (`keep −1`), Too much (😣 `harsh`); shortcuts 1–4 outside inputs; a draining cooldown ring; your etch appears at the rim |
+| `CueChip` | "drop in 6 bars" from the committed schedule (next section role/start); provisional sections read "planned" |
+| `PullPad` | others as identity-hue dots that school gently; you as a white ring; the pull as a soft field + dashed ring; the needle as a clay dot with a trail joined to the pull by a dashed tension line; status line in words; keyboard = two sliders with verbal `aria-valuetext`; pointer drag with `touch-action:none`, tap-to-place; sends `pad {x, y, active}` at ≤ 4 Hz while dragging and once on release (`active: false`) |
+| `ReactionDock` | Yes (🔥 `react fire`), Stay (`keep +1`), Move on (`keep −1`), Too much (😣 `react harsh`); keep ballots carry the section you heard; shortcuts 1–4 outside inputs; draining cooldown rings mirror `RATE_LIMITS`; your etch (`fire`/`stay`/`move`/`harsh`) appears at the rim; `keepPending` shows what the room is doing ("moving on at bar 72", "this track ends in 6 bars anyway") |
 | `VoteCard` | fieldset/legend radio group, bars filling on tally, closes at a bar; the winner flies into the liner notes on the downbeat |
 | `AskBox` / `AskList` | 140 chars, 1 per minute; your raw text visible only to you; others see Claude's paraphrase once decided; lifecycle chips |
 | `Landing` | the room's record spins silently **in sync** before the unlock; "● LIVE NOW · 23 IN THE ROOM"; "Drop the needle" — the unlock happens synchronously in its click handler; audio fades in from the next downbeat over one bar |
