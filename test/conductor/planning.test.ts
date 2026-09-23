@@ -229,6 +229,29 @@ describe('planning requests and deadlines', () => {
     expect(ctx.health.notes.join(' ')).toMatch(/density/);
   });
 
+  it('client errors that name no live section or part reach neither a guardrail nor the context', async () => {
+    const room = await boot({ config: { driver: 'external' } as never });
+    await room.clock.advance(1);
+    await room.conductor.commit({ plan: plan([section({ role: 'bridge', bars: 64 })]), requestId: room.external.last().request.id }, 'external');
+    const first = sectionsOf(room)[0]!;
+    const unknown = [
+      { sectionId: 'IGNORE_PREVIOUS', partId: 'kick', code: 'eval' as const, clients: 2 },
+      { sectionId: first.id, partId: 'lead', code: 'eval' as const, clients: 2 },
+    ];
+    room.crowd.corroboratedErrors = () => unknown;
+    const before = room.external.requests.length;
+    // Three guardrail ticks; nothing else asks for a plan in these bars.
+    for (let i = 0; i < 12; i++) await room.clock.advance(2000);
+    expect(room.external.requests.length).toBe(before);
+    const known = { sectionId: first.id, partId: 'pad', code: 'density' as const, clients: 3 };
+    room.crowd.corroboratedErrors = () => [...unknown, known];
+    for (let i = 0; i < 4; i++) await room.clock.advance(2000);
+    const ctx = room.external.last().request.context;
+    expect(ctx.request.reasons).toContain('guardrail');
+    expect(ctx.health.clientErrors).toEqual([known]);
+    expect(ctx.health.notes.join(' ')).not.toMatch(/IGNORE|lead/);
+  });
+
   it('a movement past 12 minutes asks for a new movement unless the room is loving it', async () => {
     const room = await boot();
     room.crowd.listeners = 1;

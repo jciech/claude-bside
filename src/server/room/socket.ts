@@ -3,10 +3,12 @@
 // or pre-empt an update). Every payload is zod-validated and every handler wrapped: a malformed or
 // hostile message costs a nack, never the process.
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
+import type { Socket as EngineSocket } from 'engine.io';
 import { Server, type Socket } from 'socket.io';
 import { RATE_LIMITS } from '../../shared/music.ts';
 import {
   CLIENT_EVENT_SCHEMAS,
+  namesScheduledPart,
   type ClientToServerEvents,
   type ConnectError,
   type Nack,
@@ -14,6 +16,7 @@ import {
   type RequestAck,
   type RoomSnapshot,
   type ServerToClientEvents,
+  type Telemetry,
 } from '../../shared/protocol.ts';
 import { clientAddress } from '../http/security.ts';
 import type { Broadcaster, Conductor, Crowd, EventArgs, JoinResult, Logger, RoomClock, ServerConfig, SnapshotBase } from '../types.ts';
@@ -35,8 +38,15 @@ const listenerRoom = (listenerId: string) => `listener:${listenerId}`;
 const MAX_MESSAGE_BYTES = 16 * 1024;
 /** Hard ceiling on concurrent sockets, whatever their networks. */
 const MAX_SOCKETS = 20_000;
+/**
+ * Engine.io connections beyond the socket caps, globally and per network: handshakes in flight and
+ * refused clients retrying. Connections that never join the namespace count too.
+ */
+const ENGINE_SLACK = 8;
 /** New connections per network. */
 const CONNECT_RATE: Rate = { perSec: 1, burst: 30 };
+/** Hellos per socket: the first and a few resyncs (each builds a whole welcome). */
+const HELLO_RATE: Rate = { perSec: 0.2, burst: 3 };
 /** All events from one socket; beyond it messages are dropped, and a persistent flood is disconnected. */
 const FLOOD_RATE: Rate = { perSec: 20, burst: 80 };
 const FLOOD_DISCONNECT_AFTER = 200;
@@ -66,20 +76,45 @@ function sameOrigin(req: IncomingMessage, trustProxy: number): boolean {
   }
 }
 
+const networkOf = (req: IncomingMessage, config: ServerConfig) =>
+  networkKey(clientAddress({ remoteAddress: req.socket.remoteAddress, headers: req.headers }, config.trustProxy), config.ipv6Prefix);
+
 /**
  * The socket.io server for the room: websocket only, small messages, no client bundle, and no
  * cross-site sockets (a foreign page must not be able to enrol its visitors as listeners).
+ * Engine.io connections are counted per network from the handshake on: the admission middleware in
+ * attachRoom only sees clients that join the namespace, and a silent one is held until connectTimeout.
  */
 export function createRoomServer(http: HttpServer, config: ServerConfig): RoomServer {
-  return new Server(http, {
+  const held = new Map<string, number>();
+  let total = 0;
+  const io: RoomServer = new Server(http, {
     transports: ['websocket'],
     serveClient: false,
     maxHttpBufferSize: MAX_MESSAGE_BYTES,
     pingInterval: 20_000,
     pingTimeout: 20_000,
     connectTimeout: 10_000,
-    allowRequest: (req, callback) => callback(null, sameOrigin(req, config.trustProxy)),
+    allowRequest: (req, callback) =>
+      callback(
+        null,
+        sameOrigin(req, config.trustProxy) &&
+          total < MAX_SOCKETS + ENGINE_SLACK &&
+          (held.get(networkOf(req, config)) ?? 0) < config.maxSocketsPerNetwork + ENGINE_SLACK,
+      ),
   });
+  io.engine.on('connection', (conn: EngineSocket) => {
+    const network = networkOf(conn.request, config);
+    total++;
+    held.set(network, (held.get(network) ?? 0) + 1);
+    conn.once('close', () => {
+      total--;
+      const left = (held.get(network) ?? 1) - 1;
+      if (left > 0) held.set(network, left);
+      else held.delete(network);
+    });
+  });
+  return io;
 }
 
 export function createBroadcaster(io: Server): Broadcaster {
@@ -133,6 +168,13 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
     return cached.base;
   }
 
+  /** Client errors are kept only when they name the live schedule, so the crowd holds no ids the server didn't issue. */
+  function liveErrors(errors: Telemetry['errors'], t: number): Telemetry['errors'] {
+    if (!errors.length) return errors;
+    const { sections } = snapshotBase(t);
+    return errors.filter((e) => namesScheduledPart(sections, e));
+  }
+
   function welcome(join: JoinResult, t: number): RoomSnapshot {
     const base = snapshotBase(t);
     return {
@@ -178,6 +220,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
   const onConnection = (socket: RoomSocket) => {
     let listenerId: string | null = null;
     const flood = createBucket(FLOOD_RATE, clock.now());
+    const hellos = createBucket(HELLO_RATE, clock.now());
     const clockProbes = createBucket(RATE_LIMITS.clock, clock.now());
     let dropped = 0;
 
@@ -232,10 +275,11 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
       handle('hello', (t, [payload]) => {
         const hello = parse('hello', payload);
         if (!hello) return;
+        if (!take(hellos, HELLO_RATE, t)) return nack('hello', 'rate-limited');
+        // A repeated hello resyncs: the crowd keeps a socket's listener for the socket's lifetime.
         const joined = crowd.join(socket.id, hello, socket.data.address, t);
         if (!('listenerId' in joined)) return reply('hello', joined);
         const snapshot = welcome(joined, t);
-        if (listenerId && listenerId !== joined.listenerId) void socket.leave(listenerRoom(listenerId));
         listenerId = joined.listenerId;
         socket.emit('welcome', snapshot);
         void socket.join([LIVE_ROOM, listenerRoom(joined.listenerId)]);
@@ -298,7 +342,7 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
       'telemetry',
       handle('telemetry', (t, [payload]) => {
         const telemetry = parse('telemetry', payload);
-        if (telemetry) reply('telemetry', crowd.telemetry(socket.id, telemetry, t));
+        if (telemetry) reply('telemetry', crowd.telemetry(socket.id, { ...telemetry, errors: liveErrors(telemetry.errors, t) }, t));
       }),
     );
 

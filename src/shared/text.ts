@@ -3,8 +3,12 @@
 // These strings are DATA. The UI renders them with Svelte's escaped `{text}` or `textContent` —
 // never `{@html}` / `innerHTML` (a test greps the client for it).
 
-// Control characters, zero-width and bidi overrides (built from ASCII escapes on purpose).
-const CONTROL = new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u2028-\\u202E\\u2066-\\u2069]', 'g');
+// Control characters, soft hyphens, zero-width and invisible operators, bidi marks and overrides,
+// the BOM and tag characters (built from ASCII escapes on purpose).
+const CONTROL = new RegExp(
+  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u061C\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\uFEFF\\u{E0000}-\\u{E007F}]',
+  'gu',
+);
 const ANGLE = /[<>]/g;
 const URLISH = /\b(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+\.(?:com|net|org|io|ai|gg|xyz|app|dev|ly|me|co)\b\S*/gi;
 const MARKUP = /(?:\[[^\]]*\]\([^)]*\)|`{3}|<\/?[a-z][^>]*>|&[a-z]+;|javascript:)/i;
@@ -20,9 +24,18 @@ export function sanitizePlainText(input: string, max: number): string {
     .slice(0, max);
 }
 
-/** Listener request text: plain text with URLs removed. */
+/**
+ * Listener request text: plain text with URLs removed. URLs are removed from the cleaned text, so an
+ * invisible character, an angle bracket or a lookalike dot (NFKC) can't hide one until cleaning
+ * joins it back up.
+ */
 export function sanitizeRequestText(input: string): string {
-  return sanitizePlainText(input.replace(URLISH, ''), 140);
+  let text = sanitizePlainText(input.normalize('NFKC'), Infinity);
+  for (let before = ''; before !== text; ) {
+    before = text;
+    text = text.replace(URLISH, '');
+  }
+  return sanitizePlainText(text, 140);
 }
 
 /** True when composer-authored public text is acceptable as-is (no URLs, markup or control chars). */

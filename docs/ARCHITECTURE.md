@@ -363,7 +363,12 @@ without a valid token a listener starts fresh. `w = trust × presence`: trust ri
 minutes of audible listening; presence 1 (visible) / 0.5 (hidden tab, audio on) / 0 (not audible);
 inputs ignored for the first 10 s; heartbeats every 10 s, stale after 25 s. The total weight of one
 network (/24 for IPv4, /48 for IPv6, derived from the socket peer or `trustProxy` hops) is capped at
-2.0. Sockets per network and connection rates are capped too.
+2.0, and one network counts as at most 2 voices wherever Kish n_eff is compared with a quorum.
+Sockets per network and connection rates are capped too, counted from the engine.io handshake (a
+connection that never joins the namespace still counts). One socket is one listener: a repeated
+`hello` resyncs the same listener (at most 3 at once, then one per 5 s), and a listener's identity
+is kept 10 minutes after they leave, but at most 64 per network (the longest gone are forgotten
+first). Only identities with ≥ 10 s of audible listening are persisted.
 
 **Pad aggregate** with a silent-majority prior (β = 0.25) and freshness `s = exp(−age/120 s)`:
 `P = Σ w·s·p / (Σ w·s + β·Σ w·(1−s))` — influence follows the *fraction* of the room that agrees
@@ -386,10 +391,11 @@ caps, not slowness, are what resist trolls.
   0.15 per plan (κ = 0.15 + 0.35·confidence), clamped to [0.25, 0.7] unless the movement is ambient.
 
 **Early replan** on strong, sustained consensus: pressure vs baseline > 0.45 for 24 bars (hysteresis
-resets below 0.25), Kish n_eff ≥ min(3, N), ≥ 32 bars since the last one. Half a room of 10–200
-holding one direction from rest gets there after ≈ 65–80 s (120 BPM); the fast
-lane has long since answered, so structure only moves on a lean the room keeps. It replaces the provisional
-section, never the locked ones.
+resets below 0.25), Kish n_eff ≥ min(3, N) (N present listeners, each network counting as at most 2,
+so a room behind one NAT can still reach it and a single network elsewhere can't), ≥ 32 bars since
+the last one. Half a room of 10–200 holding one direction from rest gets there after ≈ 65–80 s
+(120 BPM); the fast lane has long since answered, so structure only moves on a lean the room keeps.
+It replaces the provisional section, never the locked ones.
 
 **Stay / Move on**: one ballot per listener (the latest wins); ballots carry the section they were
 heard in (refused otherwise), are cleared at every section start and consumed once the conductor
@@ -408,14 +414,16 @@ close to a lock point) or `max` (already extended twice).
 
 **Reactions**: token buckets (`RATE_LIMITS` in `music.ts`), at most one counted per type per 4-bar
 window, attributed to the bar the listener heard (validated to lie within the last 8 bars). Rates
-per section (weighted reactions per listener per minute) become z-scores against a 15-minute
-baseline; within a section's rate one listener counts for at most one reaction per type per minute
-(max(1, minutes) in all), so a single enthusiast can't manufacture a loved moment or a trim. A
-z-signal also needs ≥ min(2, N) distinct reporters. 🔥 z ≥ 2 marks a loved moment; 💤 z ≥ 2 raises
-novelty pressure (once per section); 😣 z ≥ 2 (or ≥ 20 % of listeners within 8 bars) applies a safety
-trim (−3 dB master, −3 dB high shelf, 16 bars). A repeat trim needs new evidence: at least one Too
-much pressed since the last trim, and 16 bars since it (the z test still counts the section's
-earlier presses; the 20 % test counts only new ones).
+per section (weighted reactions per minute over the room's present weight, which a crowd of sockets
+from one network can't dilute) become z-scores against a 15-minute baseline; within a section's
+rate one listener counts for at most one reaction per type per minute (max(1, minutes) in all), so
+a single enthusiast can't manufacture a loved moment or a trim. A z-signal also needs ≥ min(2, N)
+distinct reporters on ≥ min(2, networks present) networks. 🔥 z ≥ 2 marks a loved moment; 💤 z ≥ 2
+raises novelty pressure (once per section); 😣 z ≥ 2 (or reporters holding ≥ 20 % of the room's
+network-capped weight within 8 bars) applies a safety trim (−3 dB master, −3 dB high shelf, 16
+bars). A repeat trim needs new evidence: at least one Too much pressed since the last trim, and 16
+bars since it (the z test still counts the section's earlier presses; the 20 % test counts only new
+ones).
 
 **Requests**: sanitised (`sanitizeRequestText`), merged on a normalised key, support = Σ
 w·exp(−age/6 min); the top 5 undecided go into every turn context, plus every open promise
@@ -425,7 +433,13 @@ becomes *considered* only when a real composer (Claude or the external driver) i
 planning request (`Crowd.markShown`); the autopilot, its fallbacks and `bside context` previews read
 the same summary without marking it. Raw text is shown only to its author; everyone sees the
 composer's paraphrase. Requests no composer was handed within 5 minutes get a system note. Rate: 1
-per minute per listener, 30 per minute per room.
+per minute per listener, 5 per minute per network, 30 per minute per room.
+
+**Telemetry**: at most 20 sampled clients (2 per network) send audio statistics and coded errors.
+An error names a section and a part by the ids the server issued (the schema admits nothing else)
+and is dropped on arrival unless those ids are in the live schedule; it is *corroborated* once
+trusted listeners (trust ≥ 0.6) on ≥ 2 networks report it, however small the room. At most 8
+corroborated errors reach a turn context, filtered against the schedule again.
 
 **Forks**: at most one every ~3 minutes (`rules.forkAllowed`); binding if the winner has ≥ 50 % with
 ≥ 20 % turnout, advisory at ≥ 40 % / 10 %, otherwise the composer's default. The fork shows which
@@ -534,9 +548,11 @@ depth:
 6. **Text is data.** Listener requests and every composer-authored public string go through
    `src/shared/text.ts`; the UI never uses `{@html}` or `innerHTML` (a test greps for it). Requests
    reach the prompt only inside an untrusted-data block; telemetry reaches it only as corroborated
-   error *codes*, never free text.
+   error *codes* attached to section and part ids the server issued and still schedules (checked on
+   arrival, in the context and again when the turn is rendered), never free text.
 7. **Hardened inputs**: every socket event schema-validated, every handler wrapped, token buckets per
-   event, `heardCycle` bounds, per-network weight caps, connection caps, websocket-only transport.
+   event (and per network for requests), `heardCycle` bounds, per-network weight caps, one listener
+   per socket, connection caps from the engine.io handshake on, websocket-only transport.
 8. **Admin surface**: `/api/composer/*` requires `BSIDE_ADMIN_TOKEN` (timing-safe compare, rate
    limited). In development without a token, only direct loopback peers (raw socket address) are
    allowed; in production without a token the routes are disabled.
