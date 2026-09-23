@@ -4,11 +4,15 @@ import * as core from '@strudel/core';
 import * as mini from '@strudel/mini';
 import '@strudel/tonal';
 import type { Issue } from '../shared/analysis.ts';
+import { MAX_DENSITY_FACTOR } from '../shared/limits.ts';
 import { pitchClass } from './features.ts';
+import { checkMini } from './mini.ts';
 import { captureLogs, cycleState } from './query.ts';
 
 export type ScaleLookup = (bar: number, pos: number) => Set<number> | null;
 const scaleCache = new Map<string, Set<number> | null>();
+/** The scale string is expanded for every analysed bar before any part is analysed. */
+const MAX_SCALES_PER_BAR = MAX_DENSITY_FACTOR;
 
 /** Pitch classes of a Strudel scale name, computed by Strudel's own .scale() (so it matches playback). */
 function scalePitchClasses(name: string): Set<number> | null {
@@ -37,6 +41,14 @@ const scaleIssue = (message: string, hint: string): Issue => ({ severity: 'error
 /** Scale lookup for bars 0…bars-1, or null (no scale given, or it is invalid: issues pushed to `errors`). */
 export function resolveScales(scale: string | null, bars: number, errors: Issue[]): ScaleLookup | null {
   if (scale === null || scale.trim() === '') return null;
+  const bounded = checkMini(scale);
+  if (bounded.ok) {
+    const busy = bounded.problems[0]?.message ?? (bounded.events > MAX_SCALES_PER_BAR ? `it changes up to ${bounded.events} times in a bar` : null);
+    if (busy) {
+      errors.push(scaleIssue(`The scale "${scale}" is too busy: ${busy}.`, `Change scale at most ${MAX_SCALES_PER_BAR} times a bar, e.g. "<D:dorian G:mixolydian>".`));
+      return null;
+    }
+  }
   let pattern: any;
   try {
     pattern = mini.mini(scale);

@@ -24,7 +24,16 @@ export interface MiniProblem {
 }
 
 export type MiniCheck =
-  | { ok: true; events: number; problems: MiniProblem[]; constant: number | null }
+  | {
+      ok: true;
+      events: number;
+      /** Worst case of events sounding at the same moment ("a, b, c" → 3; "a b c" → 1). */
+      polyphony: number;
+      /** Longest `a:b:c` list a single event carries (1 when there are no lists). */
+      listLength: number;
+      problems: MiniProblem[];
+      constant: number | null;
+    }
   | { ok: false; message: string; offset: number; hint: string };
 
 const REST = new Set(['~', '-']);
@@ -37,8 +46,20 @@ const MINI_HINT =
 const isNode = (x: unknown): x is KNode => !!x && typeof x === 'object' && 'type_' in x;
 const offsetOf = (n: KNode | undefined) => Math.max(0, (n?.location_?.start.offset ?? 1) - 1);
 
+const cache = new Map<string, MiniCheck>();
+const CACHE_SIZE = 512;
+
 /** Parses and bounds one mini-notation string (the value between the quotes). */
 export function checkMini(value: string): MiniCheck {
+  const hit = cache.get(value);
+  if (hit) return hit;
+  const result = parseAndBound(value);
+  if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!);
+  cache.set(value, result);
+  return result;
+}
+
+function parseAndBound(value: string): MiniCheck {
   let ast: unknown;
   try {
     ast = parse(`"${value}"`);
@@ -48,8 +69,60 @@ export function checkMini(value: string): MiniCheck {
     return { ok: false, offset, ...describeSyntaxError(value, offset, err) };
   }
   const problems: MiniProblem[] = [];
-  const events = isNode(ast) ? countEvents(ast, problems) : 1;
-  return { ok: true, events, problems, constant: isNode(ast) ? constantOf(ast) : null };
+  if (!isNode(ast)) return { ok: true, events: 1, polyphony: 1, listLength: 1, problems, constant: null };
+  return { ok: true, events: countEvents(ast, problems), polyphony: polyphonyOf(ast), listLength: listLengthOf(ast), problems, constant: constantOf(ast) };
+}
+
+/** Numeric atoms of a mini string: the largest magnitude, and whether any atom is not a number. */
+export function miniNumbers(value: string): { maxAbs: number; nonNumeric: boolean } | null {
+  let ast: unknown;
+  try {
+    ast = parse(`"${value}"`);
+  } catch {
+    return null;
+  }
+  let maxAbs = 0;
+  let nonNumeric = false;
+  const visit = (x: unknown): void => {
+    if (Array.isArray(x)) return x.forEach(visit);
+    if (!isNode(x)) return;
+    if (x.type_ === 'atom') {
+      const src = String(x.source_);
+      if (REST.has(src) || src === '_') return;
+      const v = Number(src);
+      if (src.trim() === '' || !Number.isFinite(v)) nonNumeric = true;
+      else maxAbs = Math.max(maxAbs, Math.abs(v));
+      return;
+    }
+    visit(x.source_);
+    for (const op of x.options_?.ops ?? []) visit(Object.values(op.arguments_));
+  };
+  visit(ast);
+  return { maxAbs, nonNumeric };
+}
+
+/** Events that can sound at once: stacked layers add up, sequences and alternations take the widest. */
+function polyphonyOf(node: KNode): number {
+  switch (node.type_) {
+    case 'atom':
+      return REST.has(String(node.source_)) ? 0 : 1;
+    case 'element':
+    case 'stretch':
+      return isNode(node.source_) ? polyphonyOf(node.source_) : 1;
+    case 'pattern': {
+      const kids = childrenOf(node).map(polyphonyOf);
+      const layered = ['stack', 'polymeter', 'polymeter_slowcat'].includes(String(node.arguments_?.alignment));
+      return layered ? kids.reduce((a, b) => a + b, 0) : Math.max(0, ...kids);
+    }
+    default:
+      return 1;
+  }
+}
+
+function listLengthOf(node: KNode): number {
+  const own = node.type_ === 'element' ? 1 + (node.options_?.ops ?? []).filter((op) => op.type_ === 'tail').length : 1;
+  const inner = Array.isArray(node.source_) ? node.source_.filter(isNode).map(listLengthOf) : isNode(node.source_) ? [listLengthOf(node.source_)] : [];
+  return Math.max(own, ...inner);
 }
 
 const PAIRS: Record<string, string> = { '[': ']', '<': '>', '{': '}', '(': ')' };

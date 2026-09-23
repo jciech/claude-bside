@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { SectionCheck } from '../../src/shared/analysis.ts';
+import { fingerprintDistance, type SectionCheck } from '../../src/shared/analysis.ts';
 import { MAX_PART_ONSETS_PER_BAR } from '../../src/shared/limits.ts';
 import type { SectionProgram } from '../../src/shared/program.ts';
 import type { CheckPartInput, CheckSectionInput } from '../../src/server/types.ts';
@@ -31,8 +31,9 @@ const rules = (c: SectionCheck, i = 0) => c.parts[i]!.errors.map((e) => e.rule);
 
 describe('density over the whole section and its vamp', () => {
   it('catches a density explosion that only starts after bar 16', () => {
-    // Valid statically (bounded), but 128 onsets per bar in the last bar of a 24-bar window.
-    const c = check([part('hats', 's("hh*16").lastOf(24, x => x.ply(8))', { role: 'hats' })], { bars: 16 });
+    // Valid statically (bounded), but 128 onsets per bar in the last bar of a 24-bar window: a
+    // continuing part runs on pattern time through the vamp.
+    const c = check([part('hats', 's("hh*16").lastOf(24, x => x.ply(8))', { role: 'hats', continues: true })], { bars: 16 });
     const e = c.parts[0]!.errors.find((x) => x.rule === 'density')!;
     expect(e.message).toBe(`The part plays 128 events in bar 23; a part may play at most ${MAX_PART_ONSETS_PER_BAR} per bar.`);
     expect(c.parts[0]!.analysis!.densityPerBar.max).toBe(16); // descriptors describe the composed section
@@ -44,23 +45,39 @@ describe('density over the whole section and its vamp', () => {
       ['s("hh*16").ply("<1!16 64>")', 16],
     ] as const) {
       const { pattern } = compilePart(code, { knob: () => null });
-      const result = analyzeSection({ parts: [{ ...part('bomb', code), pattern }], bpm: 120, scale: null, bars: 16, index });
+      const result = analyzeSection({ parts: [{ ...part('bomb', code, { continues: true }), pattern }], bpm: 120, scale: null, bars: 16, index });
       const e = result.parts[0]!.errors.find((x) => x.rule === 'density')!;
       expect(e.message).toMatch(new RegExp(`bar ${bar}\\b`));
     }
   });
 
   it('windows the vamp with the section\'s own loop length', () => {
-    // The burst is dense from pattern bar 8 on, and its part only sounds in score bars 0–3. An 8-bar
-    // loop replays score bars 0–7 (burst audible in play bars 8–11); a 4-bar loop replays 4–7.
+    // Continuing parts run on pattern time: the burst is dense from pattern bar 8 on, and its part only
+    // sounds in score bars 0–3. An 8-bar loop replays score bars 0–7 (burst audible in play bars 8–11);
+    // a 4-bar loop replays 4–7.
     const parts = [
-      part('burst', 's("<hh!8 [hh*16, hh*16, hh*16]!8>")', { role: 'hats', exitBar: 4 }),
-      ...[0, 1, 2, 3].map((i) => part(`bed${i}`, 's("hh*16, hh*16, hh*8")', { role: 'hats' })),
+      part('burst', 's("<hh!8 [hh*16, hh*16, hh*16]!8>")', { role: 'hats', exitBar: 4, continues: true }),
+      ...[0, 1, 2, 3].map((i) => part(`bed${i}`, 's("hh*16, hh*16, hh*8")', { role: 'hats', continues: true })),
     ];
     const fallback = check(parts, { bars: 8 });
     expect(fallback.errors.map((e) => e.message)).toEqual(['All parts together play 208 events in bar 8; a section may play at most 192 per bar.']);
     expect(check(parts, { bars: 8, vampLoopBars: 4 }).errors).toEqual([]);
     expect(check(parts, { bars: 8, vampLoopBars: 8 }).errors).toEqual([]); // clamped to half the section, like the performer
+  });
+
+  it('replays a fresh part\'s score in the vamp, and only counts bars inside its window', () => {
+    // The performer maps a part that starts in this section onto score time (window.ts runs()), so
+    // pattern bars past the score never sound; nor does anything outside [enterBar, exitBar).
+    const fresh = { continues: false };
+    const late = check([part('hats', 's("hh*8").bank("RolandTR909").lastOf(16, x => x.ply(16))', { role: 'hats', ...fresh })], { bars: 8, vampLoopBars: 4 });
+    expect(late.parts[0]!.errors).toEqual([]);
+    const unknown = check([part('hats', 's("<hh!8 hhx!8>").bank("RolandTR909")', { role: 'hats', ...fresh })], { bars: 8, vampLoopBars: 4 });
+    expect(unknown.ok).toBe(true);
+    const gone = check([part('hats', 's("hh*8").lastOf(8, x => x.ply(16))', { role: 'hats', exitBar: 4, ...fresh })], { bars: 16 });
+    expect(gone.parts[0]!.errors).toEqual([]);
+    // Pattern time runs on for a continuing part, so the same code is caught there.
+    const carried = check([part('hats', 's("hh*8").bank("RolandTR909").lastOf(16, x => x.ply(16))', { role: 'hats', continues: true })], { bars: 8, vampLoopBars: 4 });
+    expect(carried.parts[0]!.errors[0]!.message).toMatch(/128 events in bar 15/);
   });
 
   it('limits the whole mix', () => {
@@ -207,6 +224,134 @@ describe('per-part rules', () => {
   it('warns when a synth plays n() without a scale', () => {
     const c = check([part('lead', 'n("0 2 4").s("sawtooth")')]);
     expect(c.parts[0]!.warnings.map((w) => w.rule)).toContain('n-without-scale');
+  });
+
+  it('warns when n() is meant as pitch on a soundfont or a pitched sample, where it picks a variant', () => {
+    const palette = createSoundIndex(parseCatalog(fixture('../../palette/catalog.json')));
+    const warned = (code: string) => {
+      const c = runCheck({ parts: [part('lead', code)], bpm: 120, scale: 'C:major', bars: 8 }, { index: palette });
+      return c.parts[0]!.warnings.filter((w) => w.rule === 'n-without-scale' || w.rule === 'sample-index').map((w) => w.message);
+    };
+    expect(warned('n("0 2 4 7").s("gm_epiano1")')).toEqual([expect.stringMatching(/^"gm_epiano1" uses n\(\) to pick one of its \d+ variants, not the pitch, so every note plays C3\.$/)]);
+    expect(warned('n("0 2 4 7").s("piano")')).toEqual(['"piano" uses n() to pick a sample, not the pitch, so every note plays C2.']);
+    expect(warned('n("0 2 4 7").scale("C:major").s("gm_epiano1")')).toEqual([]);
+    expect(warned('note("c3 e3").n(2).s("gm_epiano1")')).toEqual([]);
+    expect(warned('n(3).s("gm_epiano1")')).toEqual([]); // one fixed n picks a variant on purpose
+  });
+});
+
+describe('knobs at their extremes', () => {
+  it('rejects a part whose knob can push it past the density limit', () => {
+    const k = { name: 'k', default: 0, min: 0, max: 1, follows: 'intensity' as const };
+    const c = check([part('hats', 's("hh*8").when(knob("k").gt(0.5), x => x.ply(16))', { role: 'hats', knobs: [k] })]);
+    expect(c.parts[0]!.analysis!.densityPerBar.max).toBe(8);
+    expect(c.parts[0]!.errors).toEqual([
+      expect.objectContaining({ rule: 'density', message: 'With its knobs at their max, the part plays 128 events in bar 0; a part may play at most 64 per bar.' }),
+    ]);
+  });
+});
+
+describe('automation', () => {
+  const cut = { name: 'cut', default: 300, min: 200, max: 9000, follows: 'brightness' as const };
+  const build = (lanes: boolean) =>
+    check(
+      [
+        part('kick', 's("sbd*4")', { role: 'kick', level: 0.9 }),
+        part('lead', 'note("d3 f3 a3 c4").s("sawtooth").lpf(knob("cut"))', {
+          knobs: [cut], level: 0.7, automation: lanes ? [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 300, to: 8000, curve: 'exp' }] : [],
+        }),
+        part('hats', 's("hh*8")', { role: 'hats', level: 0, automation: lanes ? [{ target: 'level', fromBar: 4, toBar: 12, from: 0, to: 0.8, curve: 'linear' }] : [] }),
+      ],
+      { bpm: 124, scale: 'D:minor', bars: 16 },
+    );
+
+  it('measures a build that rises through knob and level lanes, as the performer plays it', () => {
+    const flat = build(false).mix!;
+    expect(flat.spans.tension).toEqual({ start: 0, end: 0 });
+    expect(flat.audibleParts).toBe(2);
+    const c = build(true);
+    const { spans, audibleParts } = c.mix!;
+    expect(spans.brightness.end - spans.brightness.start).toBeGreaterThan(0.3);
+    expect(Math.max(spans.intensity.end - spans.intensity.start, spans.tension.end - spans.tension.start)).toBeGreaterThanOrEqual(0.2);
+    expect(audibleParts).toBe(3);
+    expect(c.fingerprint!.soundShares.hh).toBeGreaterThan(0.1);
+  });
+
+  it('counts a part that is faded out toward the mix density: the performer still plays it', () => {
+    const busy = Array.from({ length: 5 }, (_, i) => part(`p${i}`, 's("hh*16, hh*16, hh*16")', { role: 'hats', level: i ? 0.8 : 0 }));
+    expect(check(busy).errors.map((e) => e.rule)).toEqual(['density']);
+  });
+});
+
+describe('loudness follows the catalog level contract', () => {
+  const palette = createSoundIndex(parseCatalog(fixture('../../palette/catalog.json')));
+  const loud = (code: string, role: CheckPartInput['role'] = 'hats') =>
+    runCheck({ parts: [part('p', code, { role, level: 1 })], bpm: 120, scale: null, bars: 8 }, { index: palette }).parts[0]!.analysis!.loudness.estRmsDb!;
+
+  it('counts every hit of a one-shot sample, whatever the event length', () => {
+    // Offline renders (scripts/render-audio.ts, 4 bars at 120 BPM): LinnDrum hh*4/8/16 −23.6/−20.6/−18.2,
+    // 909 bd*4 −14.7 dBFS with or without .clip(1) (the 0.47 s kick fits the 0.5 s event).
+    const [h4, h8, h16] = ['hh*4', 'hh*8', 'hh*16'].map((p) => loud(`s("${p}").bank("LinnDrum")`));
+    expect(h8! - h4!).toBeCloseTo(10 * Math.log10(2), 1);
+    expect(h16! - h8!).toBeCloseTo(10 * Math.log10(2), 1);
+    for (const [est, rendered] of [[h4, -23.6], [h8, -20.6], [h16, -18.2]] as const) expect(Math.abs(est! - rendered)).toBeLessThan(1);
+    expect(Math.abs(loud('s("bd*4").bank("RolandTR909")', 'kick') - -14.7)).toBeLessThan(0.5);
+    expect(Math.abs(loud('s("bd*4").bank("RolandTR909").clip(1)', 'kick') - -14.7)).toBeLessThan(0.5);
+  });
+
+  it('counts sustained notes for as long as they hold, and a clipped sample for what plays', () => {
+    const whole = loud('note("c3").s("gm_pad_warm")', 'pad');
+    expect(loud('note("c3").s("gm_pad_warm").slow(4)', 'pad')).toBeCloseTo(whole, 1);
+    expect(loud('note("c3*4").s("gm_pad_warm")', 'pad')).toBeCloseTo(whole, 1);
+    expect(loud('note("c3*4").s("gm_pad_warm").clip(0.5)', 'pad')).toBeCloseTo(whole - 10 * Math.log10(2), 1);
+    // A 7 s break sounds for as long as it plays, whole or chopped into slices that each ring out.
+    const amen = loud('s("amen/2")', 'breaks');
+    expect(loud('s("amen/2").chop(8)', 'breaks')).toBeCloseTo(amen, 1);
+    expect(loud('s("amen/2").chop(8).clip(0.25)', 'breaks')).toBeLessThan(amen - 6);
+  });
+
+  it('shares sounds by loudness: a held pad outweighs quiet busy hats', () => {
+    const c = runCheck(
+      {
+        parts: [
+          part('kick', 's("bd*4").bank("RolandTR909")', { role: 'kick' }),
+          part('hats', 's("hh*16").bank("RolandTR909").gain(0.3)', { role: 'hats' }),
+          part('pad', 'note("c3").s("gm_pad_warm").slow(2)', { role: 'pad' }),
+        ],
+        bpm: 120,
+        scale: null,
+        bars: 16,
+      },
+      { index: palette },
+    );
+    const shares = c.fingerprint!.soundShares;
+    expect(shares.gm_pad_warm).toBeGreaterThan(shares.rolandtr909_hh!);
+    expect(shares.rolandtr909_bd).toBeGreaterThan(shares.rolandtr909_hh!);
+    expect(Object.values(shares).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 2);
+    const mixed = runCheck({ parts: [part('drums', 's("bd*4, hh*16").bank("RolandTR909")', { role: 'kick' })], bpm: 120, scale: null, bars: 8 }, { index: palette });
+    expect(mixed.parts[0]!.analysis!.sounds.map((s) => s.id)).toEqual(['rolandtr909_bd', 'rolandtr909_hh']);
+  });
+});
+
+describe('similarity of fingerprints', () => {
+  it('lets a new key and chord cycle alone move a section past the similarity threshold', () => {
+    const palette = createSoundIndex(parseCatalog(fixture('../../palette/catalog.json')));
+    const fp = (code: string, scale: string) =>
+      runCheck({ parts: [part('pad', code, { role: 'pad' })], bpm: 90, scale, bars: 16 }, { index: palette }).fingerprint!;
+    const dorian = fp('chord("<Dm9 G13>").voicing().s("gm_pad_warm").slow(2)', 'D:dorian');
+    const abMajor = fp('chord("<Ab^7 Fm9 Db^7 Eb7sus>").voicing().s("gm_pad_warm")', 'Ab:major');
+    expect(fingerprintDistance(dorian, abMajor)).toBeGreaterThanOrEqual(0.15); // ledger SIMILARITY_THRESHOLD
+    expect(fingerprintDistance(dorian, fp('chord("<Dm9 G13>").voicing().s("gm_pad_warm").slow(2)', 'D:dorian'))).toBe(0);
+  });
+});
+
+describe('the section scale', () => {
+  it('rejects a scale that changes more often than the analysis can afford, before expanding it', () => {
+    const t0 = performance.now();
+    const c = check([part('lead', 'note("c4 e4 g4")')], { scale: 'C:major*5000', bars: 64 });
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(c.errors[0]).toMatchObject({ rule: 'scale', path: 'scale', message: expect.stringMatching(/^The scale "C:major\*5000" is too busy/) });
+    expect(check([part('lead', 'note("c4 e4 g4")')], { scale: '[C:major F:major]' }).errors).toEqual([]);
   });
 });
 

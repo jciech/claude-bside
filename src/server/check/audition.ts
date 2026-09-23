@@ -18,6 +18,7 @@ export function auditionToSection(input: AuditionInput): CheckSectionInput {
       enterBar: 0,
       exitBar: null,
       patternBarAtStart: 0,
+      continues: false,
     })),
     bpm: input.bpm ?? DEFAULT_BPM,
     scale: input.scale,
