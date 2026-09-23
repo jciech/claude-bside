@@ -5,7 +5,7 @@
 import * as core from '@strudel/core';
 import type { Issue, MixAnalysis, PartAnalysis, PartDigest, SectionFingerprint, SoundUse } from '../shared/analysis.ts';
 import type { CatalogSound } from '../shared/catalog.ts';
-import { BLOCKED_SOUNDS } from '../shared/catalog.ts';
+import { BLOCKED_SOUNDS, failingVariant } from '../shared/catalog.ts';
 import { HAP_LIMITS, MAX_MIX_ONSETS_PER_BAR, MAX_PART_ONSETS_PER_BAR, findLimitViolations } from '../shared/limits.ts';
 import { PERCUSSIVE_ROLES, PITCHED_ROLES, bpmToCps, secondsPerBar, type PartRole } from '../shared/music.ts';
 import { vampLoopBars } from '../shared/schedule.ts';
@@ -220,6 +220,7 @@ class ProblemLog {
   private readonly blocked = new Set<string>();
   private readonly outOfRange = new Map<string, { notes: Set<string>; bar: number; range: [number, number] }>();
   private readonly wraps = new Map<string, { n: number; count: number }>();
+  private readonly missing = new Map<string, { sound: CatalogSound; n: number; variant: number; bar: number }>();
   private nonObject: { value: string; bar: number } | null = null;
   private badNote: string | null = null;
   private nWithoutScale: string | null = null;
@@ -254,6 +255,10 @@ class ProblemLog {
   }
   wrap(id: string, n: number, count: number): void {
     this.wraps.set(id, { n: Math.max(n, this.wraps.get(id)?.n ?? 0), count });
+  }
+  missingVariant(sound: CatalogSound, n: unknown, bar: number): void {
+    const variant = failingVariant(sound, n);
+    if (variant !== null && !this.missing.has(sound.id)) this.missing.set(sound.id, { sound, n: Number(n ?? 0), variant, bar });
   }
   nonObjectValue(value: unknown, bar: number): void {
     this.nonObject ??= { value: JSON.stringify(value)?.slice(0, 40) ?? String(value), bar };
@@ -294,6 +299,11 @@ class ProblemLog {
     }
     for (const [sid, w] of this.wraps) {
       warn('sample-index', `"${sid}" has ${w.count} sample${w.count === 1 ? '' : 's'}; n=${w.n} wraps around to ${w.n % Math.max(1, w.count)}.`, `Use n values 0–${w.count - 1}.`);
+    }
+    for (const [sid, m] of this.missing) {
+      const which = m.n === m.variant ? `variant n=${m.n}` : `n=${m.n} (variant ${m.variant} of ${m.sound.count})`;
+      err('sample-index', `"${sid}" ${which} does not exist upstream, so it plays silence (first in bar ${m.bar}).`,
+        `Use n values 0–${m.sound.count - 1} except ${m.sound.failingVariants!.join(', ')}.`);
     }
     if (this.badNote) err('value', this.badNote, 'Notes are names like "c3 eb3" or MIDI numbers; do arithmetic before the control: note("0 2".add(48)) or n(…).scale(…).');
     if (this.nWithoutScale) {
@@ -343,6 +353,7 @@ function readOnset(value: unknown, at: ReadContext, ctx: ScanContext, problems: 
   else if (!entry && !problems.isUnknown(id)) problems.unknownSound(id, s, bank, at.bar, suggestSounds(ctx.index, s, bank));
 
   if (entry?.kind === 'sample' && typeof v.n === 'number' && entry.count > 0 && v.n >= entry.count) problems.wrap(entry.id, v.n, entry.count);
+  if (entry?.failingVariants) problems.missingVariant(entry, v.n, at.bar);
 
   const midi = pitchOf(v, entry, problems);
   if (midi !== null && entry?.kind === 'soundfont' && entry.range && (midi < entry.range[0] || midi > entry.range[1])) {

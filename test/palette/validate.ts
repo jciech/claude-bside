@@ -4,7 +4,7 @@ import { SOUND_CATEGORIES } from '../../src/shared/catalog.ts';
 
 const KINDS = ['synth', 'sample', 'soundfont', 'wavetable'];
 const MAP_KINDS = ['samples', 'bank-aliases'];
-const SOUND_KEYS = new Set(['id', 'kind', 'category', 'family', 'tags', 'label', 'count', 'pitched', 'source', 'machine', 'usage', 'range', 'brightness', 'level', 'bytes', 'durationSec', 'aliases', 'license']);
+const SOUND_KEYS = new Set(['id', 'kind', 'category', 'family', 'tags', 'label', 'count', 'failingVariants', 'pitched', 'source', 'machine', 'usage', 'range', 'brightness', 'level', 'bytes', 'durationSec', 'aliases', 'license']);
 const MAP_KEYS = new Set(['id', 'kind', 'path', 'upstream', 'license', 'order']);
 
 type Obj = Record<string, unknown>;
@@ -44,6 +44,11 @@ export function catalogProblems(json: unknown): string[] {
     if (!(SOUND_CATEGORIES as readonly unknown[]).includes(sound.category)) bad(where, `category ${String(sound.category)}`);
     if (isStr(sound.family) && !/^[a-z-]+\/[a-z-]+$/.test(sound.family)) bad(where, `family ${sound.family} is not <group>/<detail>`);
     if (!Number.isInteger(sound.count) || (sound.count as number) < 1) bad(where, 'count must be a positive integer');
+    if (sound.failingVariants !== undefined) {
+      const f = sound.failingVariants;
+      if (!Array.isArray(f) || f.length === 0 || !f.every((n) => Number.isInteger(n) && n >= 0 && n < (sound.count as number)))
+        bad(where, 'failingVariants must be a non-empty list of variant indices below count');
+    }
     if (typeof sound.pitched !== 'boolean') bad(where, 'pitched must be a boolean');
     if (sound.machine !== undefined && !isStr(sound.machine)) bad(where, 'machine must be a string');
     if (!isObj(sound.usage) || !isStr(sound.usage.s)) bad(where, 'usage.s must be a string');

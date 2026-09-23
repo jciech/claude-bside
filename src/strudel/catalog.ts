@@ -15,6 +15,7 @@ const SoundSchema = z.looseObject({
   tags: z.string(),
   label: z.string().min(1),
   count: z.number().int().min(0),
+  failingVariants: z.array(z.number().int().min(0)).optional(),
   pitched: z.boolean(),
   source: z.string().min(1),
   machine: z.string().optional(),
@@ -67,6 +68,7 @@ export function parseCatalog(json: unknown): Catalog {
       throw new Error(`Invalid catalog: usage of "${s.id}" resolves to "${resolvedName(s.usage.s, s.usage.bank)}"`);
     }
     if (s.range && s.range[0] > s.range[1]) throw new Error(`Invalid catalog: range of "${s.id}" is reversed`);
+    if (s.failingVariants?.some((n) => n >= s.count)) throw new Error(`Invalid catalog: failingVariants of "${s.id}" must be below its count ${s.count}`);
   }
   const orders = catalog.maps.map((m) => m.order);
   if (new Set(orders).size !== orders.length) throw new Error('Invalid catalog: map registration orders must be unique');

@@ -30,6 +30,11 @@ export interface CatalogSound {
   label: string;
   /** Number of variants (samples in the bank, or soundfont variants selectable with n). */
   count: number;
+  /**
+   * Variant indices (0…count-1) that don't exist upstream and play silence, e.g. [11] for
+   * gm_gunshot. `n` selects variant round(n) mod count, so n = 23 fails there too. Absent when all play.
+   */
+  failingVariants?: number[];
   /** Pitched sources respond to note(); unpitched ones use n() as a sample index. */
   pitched: boolean;
   /** Map id this came from (see CatalogMap.id); "builtin" for synths. */
@@ -42,7 +47,20 @@ export interface CatalogSound {
   range?: [number, number];
   /** Brightness prior 0..1 (spectral centroid, measured when possible, else by family). */
   brightness: number;
-  /** Measured at gain 1 (C4 or n=0, 1 s) by the offline renderer; null when not measured. */
+  /**
+   * One event rendered offline (scripts/render-audio.ts) at gain 1 and n=0, pitched sounds at C4
+   * (a soundfont that can't play C4 at the middle of its range), held for 1 s; sample files
+   * (`kind: 'sample'`) are clipped to the event (clip: 1). null when not measured or silent.
+   * - `rmsDb`: RMS in dBFS of both channels over the 1 s from onset, i.e. energy per event: a
+   *   one-shot reads low (its energy is spread over the second), a sustained sound reads its
+   *   steady-state level.
+   * - `peakDb`: the sample peak of either channel (no oversampling).
+   * - `centroidHz`: spectral centroid of the mid channel, magnitude-weighted within each 2048-point
+   *   frame and averaged over frames weighted by their energy (frames 60 dB below the loudest skipped).
+   * A part's RMS from these: roughly rmsDb + 10·log10(onsets per second) for hits that don't overlap
+   * (for a sustained sound, + 10·log10(the fraction of time it sounds) instead), then
+   * + 20·log10(gain × velocity): −1.9 dB at superdough's default gain of 0.8.
+   */
   level: { rmsDb: number; peakDb: number; centroidHz: number } | null;
   /** Approximate size and length of variant 0 (memory budgeting; long pads excluded from crates). */
   bytes?: number;
@@ -79,3 +97,17 @@ export const CATALOG_URL = '/palette/catalog.json';
 
 /** Sounds that exist but the composer may not use (code-execution sinks or engine internals). */
 export const BLOCKED_SOUNDS: ReadonlySet<string> = new Set(['bytebeat', 'bus', 'user', 'one']);
+
+/** The variant superdough plays for `n`: round(n) mod count, non-numbers as 0 (superdough util.mjs getSoundIndex). */
+export function variantIndex(n: unknown, count: number): number {
+  const x = Number(n);
+  const i = Math.round(Number.isNaN(x) ? 0 : x);
+  return ((i % count) + count) % count;
+}
+
+/** The variant `n` selects on `sound` when that variant plays silence (CatalogSound.failingVariants), else null. */
+export function failingVariant(sound: CatalogSound, n: unknown): number | null {
+  if (!sound.failingVariants?.length || sound.count < 1) return null;
+  const variant = variantIndex(n, sound.count);
+  return sound.failingVariants.includes(variant) ? variant : null;
+}

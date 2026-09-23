@@ -13,7 +13,8 @@ function shortTags(s: CatalogSound, n: number, skip: readonly string[] = []): st
 }
 
 function soundEntry(s: CatalogSound): string {
-  const count = s.count > 1 ? `(${s.count})` : '';
+  const silent = s.failingVariants?.length ? `; n=${s.failingVariants.join(',')} silent` : '';
+  const count = s.count > 1 ? `(${s.count}${silent})` : '';
   const range = s.kind === 'soundfont' && s.range && (s.range[0] > 21 || s.range[1] < 108) ? `[${noteName(s.range[0])}–${noteName(s.range[1])}]` : '';
   const tags = shortTags(s, 2);
   return `${s.id}${count}${range}${tags ? ` ${tags}` : ''}`;
@@ -50,6 +51,7 @@ export function renderCatalog(catalog: Catalog): string {
     '',
     'Every sound the room can play. `id(n)`: n variants (sample index `s("id:3")`/`.n(3)`, or soundfont variant `.n(k)`);',
     '`[A1–C6]`: a soundfont\'s playable range (notes outside it are silent). Pitched sources take `note()`/`n().scale()`.',
+    '`id(12; n=11 silent)`: variant 11 does not exist and plays nothing; the checker rejects it.',
     '',
     '## Drum machines: s("bd sd hh").bank("Machine") — machine (alias) character: instruments with counts',
     ...[...machines.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([m, sounds]) => machineLine(m, sounds)),

@@ -134,10 +134,13 @@ describe('palette/catalog.json', () => {
     // Known unplayable zones (research scan): vibraphone D6+ hangs, contrabass has nothing below C1.
     expect(byId.get('gm_vibraphone')!.range![1]).toBeLessThan(86);
     expect(byId.get('gm_contrabass')!.range![0]).toBeGreaterThanOrEqual(24);
-    // Upstream gm.mjs names three presets that don't exist; the composer is told which n fails.
-    expect(byId.get('gm_electric_bass_finger')!.tags).toContain('n=1 fails');
-    expect(byId.get('gm_slap_bass_2')!.tags).toContain('n=2 fails');
-    expect(byId.get('gm_gunshot')!.tags).toContain('n=11 fails');
+    // Upstream gm.mjs names three presets that don't exist.
+    expect(catalog.sounds.filter((s) => s.failingVariants).map((s) => [s.id, s.failingVariants])).toEqual([
+      ['gm_electric_bass_finger', [1]],
+      ['gm_slap_bass_2', [2]],
+      ['gm_gunshot', [11]],
+    ]);
+    for (const sound of catalog.sounds) expect(sound.tags, sound.id).not.toMatch(/n=\d+ fails/);
   });
 
   it('has measured levels for the sounds the analyzer leans on most', () => {

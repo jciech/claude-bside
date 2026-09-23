@@ -70,6 +70,8 @@ describe('the system prompt', () => {
     expect(catalog).toContain('RolandTR909 (tr909)');
     expect(catalog).toMatch(/RolandTR909[^\n]*: bd4 cp5 cr5 hh4/);
     expect(catalog).toMatch(/gm_vibraphone\(\d+\)\[A0–C#6\]/);
+    for (const entry of ['gm_electric_bass_finger(4; n=1 silent)', 'gm_slap_bass_2(4; n=2 silent)', 'gm_gunshot(12; n=11 silent)']) expect(catalog).toContain(entry);
+    expect(catalog).not.toMatch(/fails/);
     expect(renderCatalog(smallCatalog)).toMatch(/^RolandTR909 \(tr909\)[^\n]*: bd4 cp5 hh4 sd16$/m);
   });
 });

@@ -1430,8 +1430,7 @@ function soundfontDrafts(missingFonts: ReadonlySet<string>): Draft[] {
     if (!FAMILIES[family]) throw new Error(`${name}: unknown family ${family}`);
     const font = variants[0]!;
     if (missingFonts.has(font)) throw new Error(`${name}: variant 0 (${font}) is missing upstream`);
-    // Variants that always fail are called out where the composer reads: n wraps modulo count.
-    const broken = variants.flatMap((variant, n) => (missingFonts.has(variant) ? [`n=${n} fails`] : []));
+    const failing = variants.flatMap((variant, n) => (missingFonts.has(variant) ? [n] : []));
     const sf2 = font.replace(/^\d+_/, '').replace(/_sf2(_file)?$/, '').replace(/_/g, ' ');
     return {
       sound: {
@@ -1439,9 +1438,10 @@ function soundfontDrafts(missingFonts: ReadonlySet<string>): Draft[] {
         kind: 'soundfont',
         category: category ?? FAMILIES[family]!.category,
         family,
-        tags: [tags, ...broken].join(', '),
+        tags,
         label,
         count: variants.length,
+        ...(failing.length ? { failingVariants: failing } : {}),
         pitched: true,
         source: SOUNDFONT_SOURCE,
         usage: { s: name },
@@ -1779,6 +1779,7 @@ function finish(draft: Draft, cache: Cache): CatalogSound {
     tags: sound.tags,
     label: sound.label,
     count: sound.count,
+    ...(sound.failingVariants?.length ? { failingVariants: sound.failingVariants } : {}),
     pitched: sound.pitched,
     source: sound.source,
     ...(sound.machine ? { machine: sound.machine } : {}),
