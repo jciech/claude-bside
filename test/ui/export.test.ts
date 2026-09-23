@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { parse } from 'acorn';
 import { describe, expect, it } from 'vitest';
 import { hash2code } from '@strudel/core';
 import { bakeKnobs, mapsForSounds, sampleLines, soundingParts, strudelProgram, strudelUrl, STRUDEL_URL } from '../../src/client/ui/export.ts';
@@ -17,6 +18,26 @@ describe('export to strudel.cc', () => {
     expect(bakeKnobs(".lpf(knob('cut'))", [{ ...knobs[0]!, default: 1234.56789 }])).toBe('.lpf(1234.5679)');
     expect(bakeKnobs('.lpf(knob("other"))', knobs)).toBe('.lpf(knob("other"))');
     expect(bakeKnobs('.lpf(knob("cut"))', knobs, { cut: 1525 })).toBe('.lpf(1525)');
+  });
+
+  it('bakes a knob with methods chained on it into a pattern, and a negative one into something that still parses', () => {
+    const knobs = [
+      { name: 'cut', default: 800, min: 300, max: 2400, follows: 'brightness' as const },
+      { name: 'tilt', default: -0.5, min: -1, max: 1, follows: 'none' as const },
+    ];
+    const cases: [string, string][] = [
+      ['s("bd*4").lpf(knob("cut").segment(4))', 's("bd*4").lpf(pure(800).segment(4))'],
+      ['s("bd").lpf(knob("cut") .range(200, 2000))', 's("bd").lpf(pure(800) .range(200, 2000))'],
+      ['knob("tilt").add(0.1).segment(2).s("hh")', 'pure(-0.5).add(0.1).segment(2).s("hh")'],
+      ['s("bd").pan(-knob("tilt"))', 's("bd").pan(-(-0.5))'],
+      ['s("bd").pan(knob("tilt") ** 2)', 's("bd").pan((-0.5) ** 2)'],
+    ];
+    for (const [code, baked] of cases) {
+      expect(validatePart(code, { knobs: knobs.map((k) => k.name) }).ok).toBe(true);
+      expect(bakeKnobs(code, knobs)).toBe(baked);
+      expect(() => parse(baked, { ecmaVersion: 'latest' })).not.toThrow();
+      expect(validatePart(baked, { knobs: [] }).errors).toEqual([]);
+    }
   });
 
   it('exports the knob values and faders sounding now, or the declared ones for a section the engine does not know', () => {

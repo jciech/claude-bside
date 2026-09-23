@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { CATALOG_URL } from '../../../shared/catalog.ts';
+  import { CATALOG_URL, type Catalog } from '../../../shared/catalog.ts';
   import { scoreBarAt } from '../../../shared/schedule.ts';
   import { parseCatalog } from '../../../strudel/catalog.ts';
   import { useRoom } from '../context.ts';
@@ -127,14 +127,21 @@
 
   // ─── Copy / open in strudel.cc ──────────────────────────────────────────────────────────────────
 
-  async function program(): Promise<string | null> {
+  // Fetched before any click: Safari only lets a page write the clipboard inside the click itself,
+  // not after awaiting a fetch. Undefined while loading; null if it failed.
+  let catalog: Catalog | null | undefined;
+  const catalogLoaded: Promise<unknown> = fetch(CATALOG_URL)
+    .then((r) => r.json())
+    .then((json) => (catalog = parseCatalog(json)))
+    .catch(() => (catalog = null));
+
+  function program(): string | null {
     const s = np.section;
     if (!s) return null;
     let maps: ReturnType<typeof mapsForSounds> = [];
     try {
-      const catalog = parseCatalog(await (await fetch(CATALOG_URL)).json());
       const sounds = new Set(engine.query(s.startCycle, s.startCycle + Math.min(8, s.bars)).filter((e) => e.sectionId === s.id).map((e) => e.sound));
-      maps = mapsForSounds(catalog, sounds);
+      if (catalog) maps = mapsForSounds(catalog, sounds);
     } catch {
       // Without the catalog the export still plays built-in sounds.
     }
@@ -150,23 +157,27 @@
     });
   }
 
-  async function copy(): Promise<void> {
-    const text = await program();
+  function copy(): void {
+    if (catalog === undefined) return void catalogLoaded.then(copy);
+    const text = program();
     if (!text) return;
+    const done = (ok: boolean) => {
+      copied = ok ? 'copied' : 'failed';
+      setTimeout(() => (copied = 'idle'), 2000);
+    };
     try {
-      await navigator.clipboard.writeText(text);
-      copied = 'copied';
+      navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
     } catch {
-      copied = 'failed';
+      done(false);
     }
-    setTimeout(() => (copied = 'idle'), 2000);
   }
 
   function open(): void {
     // Open the tab inside the click (Safari blocks popups opened after an await), then point it at strudel.cc.
     const tab = window.open('about:blank', '_blank');
     if (tab) tab.opener = null;
-    void program().then((text) => {
+    void catalogLoaded.then(() => {
+      const text = program();
       if (tab && text) tab.location.href = strudelUrl(text);
       else tab?.close();
     });

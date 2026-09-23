@@ -23,7 +23,7 @@
 
   const eyebrow = $derived(
     $connection === 'full'
-      ? 'The room is full right now'
+      ? 'The room is full right now · retrying'
       : $connection === 'offline'
         ? 'The room is offline · retrying'
         : $connection === 'live'

@@ -9,13 +9,17 @@ import type { RoomStores } from '../ui/stores.ts';
 export type RequestResult = RequestAck | { ok: false; error: 'offline' | 'timeout' };
 
 export interface RoomActions {
-  /** The listener's puck. Throttled to ≤ 4 Hz while `active`; a release is always sent. */
+  /**
+   * The listener's puck. Throttled to ≤ 4 Hz while `active` and to the server's pad bucket overall;
+   * the latest point is always sent, a release as soon as the bucket allows.
+   */
   pad(point: PadPoint, active: boolean): void;
   /** Stay (+1) / Move on (−1) for the section audible now. False if nothing is playing. */
   keep(v: 1 | -1): boolean;
   react(type: DockReaction): boolean;
   request(text: string): Promise<RequestResult>;
-  vote(forkId: string, option: 'A' | 'B' | 'C'): void;
+  /** False if not in the room (nothing was sent). */
+  vote(forkId: string, option: 'A' | 'B' | 'C'): boolean;
   /** Something the heartbeat reports changed (audibility, visibility, volume): report soon. */
   poke(): void;
 }

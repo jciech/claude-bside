@@ -2,10 +2,9 @@
   // The record's text alternative: what is playing, in words. Visually hidden until someone asks
   // for it with "?" — then it opens as a card for sighted keyboard users too.
   import { tick } from 'svelte';
-  import { scoreBarAt } from '../../../shared/schedule.ts';
   import { useRoom } from '../context.ts';
   import { bpmOf, cueText, scaleLabel, sideLetter } from '../format.ts';
-  import { audibleInstances, nowPlaying, partState } from '../now.ts';
+  import { nowPlaying, summaryLines } from '../now.ts';
 
   const { room, pulse, mutes } = useRoom();
   const { schedule, notes } = room.stores;
@@ -22,13 +21,7 @@
 
   const cycle = $derived(Number.isFinite($bar) ? $bar : 0);
   const np = $derived(nowPlaying($schedule, cycle));
-  const parts = $derived(
-    audibleInstances($schedule, cycle).map((x) => {
-      const state = x.leaving ? 'leaving' : partState(x.part, scoreBarAt(x.section, Math.max(0, cycle - x.section.startCycle)));
-      const words = state === 'waiting' ? `comes in at bar ${x.section.startCycle + x.part.enterBar}` : state === 'playing' ? 'playing' : 'leaving';
-      return `${x.part.id} — ${x.part.instrument}, ${words}${$mutes.has(x.part.id) ? ' (muted in your mix)' : ''}`;
-    }),
-  );
+  const parts = $derived(summaryLines($schedule, cycle, $mutes));
   const latest = $derived($notes[$notes.length - 1] ?? null);
 </script>
 
@@ -53,7 +46,7 @@
       {#if np.next && np.barsToNext !== null}Next: {cueText(np.next.role, np.barsToNext)}{np.next.provisional ? ' (planned)' : ''}.{/if}
     </p>
     <ul>
-      {#each parts as line (line)}<li>{line}</li>{/each}
+      {#each parts as line (line.key)}<li>{line.text}</li>{/each}
     </ul>
   {:else}
     <p>Nothing is playing right now — the room is listening.</p>

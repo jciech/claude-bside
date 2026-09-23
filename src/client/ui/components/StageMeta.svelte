@@ -26,6 +26,8 @@
 
   {#if $connection === 'reconnecting' || $connection === 'offline'}
     <p class="composer warn" role="status"><span class="dot" aria-hidden="true"></span>reconnecting · still playing</p>
+  {:else if $connection === 'full'}
+    <p class="composer warn" role="status"><span class="dot" aria-hidden="true"></span>room full · trying again</p>
   {:else if line}
     <p class="composer" class:planning><span class="dot" aria-hidden="true"></span>{line}</p>
   {/if}

@@ -44,11 +44,18 @@ function num(v: number): string {
   return String(Math.round(v * 10_000) / 10_000);
 }
 
-/** knob("x") → a number (strudel.cc has no room knobs): `values[x]`, else the knob's declared default. */
+/**
+ * knob("x") → a number (strudel.cc has no room knobs): `values[x]`, else the knob's declared default.
+ * A method chained on the knob needs a pattern (`800.segment(4)` doesn't parse), and a negative
+ * number needs parentheses after a unary minus or before `**`.
+ */
 export function bakeKnobs(code: string, knobs: readonly Knob[], values: Readonly<Record<string, number>> = {}): string {
-  return code.replace(/\bknob\(\s*(["'`])([a-z][a-z0-9_]{0,15})\1\s*\)/g, (match, _q: string, name: string) => {
+  return code.replace(/\bknob\(\s*(["'`])([a-z][a-z0-9_]{0,15})\1\s*\)/g, (match, _q: string, name: string, offset: number) => {
     const k = knobs.find((x) => x.name === name);
-    return k ? num(values[name] ?? k.default) : match;
+    if (!k) return match;
+    const v = num(values[name] ?? k.default);
+    if (/^\s*\./.test(code.slice(offset + match.length))) return `pure(${v})`;
+    return v.startsWith('-') ? `(${v})` : v;
   });
 }
 

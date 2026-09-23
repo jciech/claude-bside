@@ -1,10 +1,17 @@
 // Client mirror of the server's token buckets (RATE_LIMITS in src/shared/music.ts), so buttons show
 // a draining cooldown ring instead of silently getting nacked.
+import type { RequestResult } from '../room/types.ts';
 
 export interface Rate {
   perSec: number;
   burst: number;
 }
+
+/**
+ * Extra wait for a message held back until a token was due: the server's bucket counts arrivals,
+ * and this message may travel faster than the ones that emptied it.
+ */
+export const ARRIVAL_SLACK_MS = 100;
 
 export class TokenBucket {
   private tokens: number;
@@ -51,4 +58,12 @@ export class TokenBucket {
     const l = this.level(nowMs);
     return l >= 1 ? 0 : ((1 - l) / this.rate.perSec) * 1000;
   }
+}
+
+/**
+ * Whether the server's request bucket paid for this answer: crowd.ts request() takes the token
+ * after its empty and warm-up checks. An ask that timed out may have arrived, so it counts.
+ */
+export function requestSpent(res: RequestResult): boolean {
+  return res.ok || res.error === 'rate-limited' || res.error === 'room-busy' || res.error === 'timeout';
 }

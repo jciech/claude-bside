@@ -4,7 +4,7 @@
 // and the listener's outgoing gestures.
 import { io, type Socket } from 'socket.io-client';
 import { CATALOG_URL } from '../../shared/catalog.ts';
-import { HEARTBEAT_MS, type DockReaction } from '../../shared/music.ts';
+import { HEARTBEAT_MS, RATE_LIMITS, type DockReaction } from '../../shared/music.ts';
 import {
   CLIENT_VERSION,
   isConnectError,
@@ -18,6 +18,7 @@ import {
 import { startClockSync } from '../engine/clock-sync.ts';
 import { createEngine } from '../engine/engine.ts';
 import type { ClockSync, Engine, EngineOptions } from '../engine/types.ts';
+import { ARRIVAL_SLACK_MS, TokenBucket } from '../ui/cooldown.ts';
 import { quantizePad } from '../ui/pad.ts';
 import { safeStorage } from '../ui/settings.ts';
 import { applyScheduleUpdate, applySnapshotToStores, appendNote, pruneSections, recordEtch } from '../ui/stores.ts';
@@ -38,6 +39,8 @@ const REQUEST_TIMEOUT_MS = 8000;
 const WELCOME_WAIT_MS = 2000;
 const OFFLINE_AFTER_ERRORS = 3;
 const RETRY_REFUSED_MS = 5000;
+/** A hello refused for capacity is retried from RETRY_REFUSED_MS, doubling up to this (± a quarter, so a full room isn't hit in step). */
+const RETRY_HELLO_MAX_MS = 30_000;
 /** Refusals that mean the room (or this network's share of it) is at capacity, not a network fault. */
 const FULL_ON_CONNECT: ReadonlySet<ConnectError> = new Set(['server-full', 'too-many-connections']);
 const FULL_ON_HELLO: ReadonlySet<NackReason> = new Set(['room-full', 'too-many-tabs']);
@@ -105,10 +108,13 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
   let lastBeatAt = Number.NEGATIVE_INFINITY;
   let pokeTimer: unknown = null;
   let lastTelemetryBlock: number | null = null;
-  let padPending: PadPoint | null = null;
+  let padPending: { point: PadPoint; active: boolean } | null = null;
   let padTimer: unknown = null;
   let lastPadAt = Number.NEGATIVE_INFINITY;
+  const padBucket = new TokenBucket(RATE_LIMITS.pad, deps.now());
   let retryTimer: unknown = null;
+  let helloTimer: unknown = null;
+  let helloBackoffMs = RETRY_REFUSED_MS;
   let hue: number | null = null;
   const welcomeWaiters = new Set<() => void>();
 
@@ -138,6 +144,23 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
     if (resyncing || !socket.connected) return;
     resyncing = true;
     hello();
+  };
+
+  // The server keeps a refused socket connected without ever welcoming it: ask again later.
+  const retryHello = () => {
+    if (helloTimer !== null) return;
+    const wait = helloBackoffMs * (0.75 + Math.random() / 2);
+    helloBackoffMs = Math.min(RETRY_HELLO_MAX_MS, helloBackoffMs * 2);
+    helloTimer = timers.setTimeout(() => {
+      helloTimer = null;
+      resync();
+    }, wait);
+  };
+
+  const cancelHelloRetry = () => {
+    if (helloTimer !== null) timers.clearTimeout(helloTimer);
+    helloTimer = null;
+    helloBackoffMs = RETRY_REFUSED_MS;
   };
 
   // ─── Heartbeat and telemetry ──────────────────────────────────────────────────────────────────
@@ -193,12 +216,14 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
   socket.on('connect', () => {
     connectErrors = 0;
     resyncing = false;
+    cancelHelloRetry();
     stores.connection.set(everWelcomed ? 'reconnecting' : 'connecting');
     hello();
   });
 
   socket.on('disconnect', () => {
     welcomed = false;
+    cancelHelloRetry();
     stores.connection.set('reconnecting');
   });
 
@@ -224,6 +249,7 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
     telemetryOn = s.telemetry;
     welcomed = true;
     resyncing = false;
+    cancelHelloRetry();
     if (everWelcomed) clock.resync();
     everWelcomed = true;
     stores.connection.set('live');
@@ -254,40 +280,44 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
   socket.on('composer', (status) => stores.composer.set(status));
   socket.on('nack', (nack) => {
     stores.nack.set({ ...nack, at: Date.now() });
-    if (nack.event === 'hello' && FULL_ON_HELLO.has(nack.reason)) stores.connection.set('full');
+    if (nack.event === 'hello' && FULL_ON_HELLO.has(nack.reason)) {
+      resyncing = false;
+      stores.connection.set('full');
+      retryHello();
+    }
   });
 
   // ─── Outgoing gestures ────────────────────────────────────────────────────────────────────────
 
-  const sendPad = (p: PadPoint, active: boolean) => {
-    if (!welcomed) return;
-    socket.emit('pad', { x: p.x, y: p.y, active });
-    lastPadAt = deps.now();
-  };
-
+  // Drag points are spaced PAD_INTERVAL_MS apart; a release skips the spacing, but every message
+  // needs a token from the server's bucket, or fast tapping would get the final release refused.
   const flushPad = () => {
     padTimer = null;
     if (!padPending) return;
-    const p = padPending;
+    const now = deps.now();
+    const spacing = padPending.active ? lastPadAt + PAD_INTERVAL_MS - now : 0;
+    const refill = padBucket.waitMs(now);
+    const wait = Math.max(spacing, refill > 0 ? refill + ARRIVAL_SLACK_MS : 0);
+    if (wait > 0) {
+      padTimer = timers.setTimeout(flushPad, wait);
+      return;
+    }
+    const { point, active } = padPending;
     padPending = null;
-    sendPad(p, true);
+    if (!welcomed) return;
+    padBucket.take(now);
+    socket.emit('pad', { x: point.x, y: point.y, active });
+    lastPadAt = now;
   };
 
   const actions = {
     pad(point: PadPoint, active: boolean) {
-      const p = quantizePad(point);
-      if (!active) {
-        if (padTimer !== null) timers.clearTimeout(padTimer);
-        padTimer = null;
-        padPending = null;
-        sendPad(p, false);
-        return;
+      padPending = { point: quantizePad(point), active };
+      if (padTimer !== null) {
+        if (active) return;
+        timers.clearTimeout(padTimer);
       }
-      padPending = p;
-      if (padTimer !== null) return;
-      const wait = lastPadAt + PAD_INTERVAL_MS - deps.now();
-      if (wait <= 0) flushPad();
-      else padTimer = timers.setTimeout(flushPad, wait);
+      flushPad();
     },
 
     keep(v: 1 | -1): boolean {
@@ -318,8 +348,10 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
       }
     },
 
-    vote(forkId: string, option: 'A' | 'B' | 'C') {
-      if (welcomed) socket.emit('vote', { forkId, option });
+    vote(forkId: string, option: 'A' | 'B' | 'C'): boolean {
+      if (!welcomed) return false;
+      socket.emit('vote', { forkId, option });
+      return true;
     },
 
     poke,
@@ -333,7 +365,7 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
     mock: false,
     destroy() {
       timers.clearInterval(tick);
-      for (const t of [pokeTimer, padTimer, retryTimer]) if (t !== null) timers.clearTimeout(t);
+      for (const t of [pokeTimer, padTimer, retryTimer, helloTimer]) if (t !== null) timers.clearTimeout(t);
       offState();
       offVisibility();
       offResync();

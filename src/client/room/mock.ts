@@ -4,7 +4,7 @@
 // through their lifecycle, liner notes at every track, and Stay / Move on that really edit the
 // schedule. Outgoing gestures are accepted locally with the feedback the server would give.
 import { CATALOG_URL } from '../../shared/catalog.ts';
-import { bpmToCps, type DockReaction, type EtchType } from '../../shared/music.ts';
+import { bpmToCps, RATE_LIMITS, type DockReaction, type EtchType } from '../../shared/music.ts';
 import type { MixerState, SectionProgram } from '../../shared/program.ts';
 import type { ComposerStatus, CrowdFrame, ForkState, KeepPending, LinerNote, PadPoint, RequestCard, RoomSnapshot, ScheduleUpdate } from '../../shared/protocol.ts';
 import { KEEP_PHRASE_BARS, plannedPlayBars, scoreBarAt } from '../../shared/schedule.ts';
@@ -12,6 +12,7 @@ import { sanitizeRequestText } from '../../shared/text.ts';
 import { createTimeline, cycleAtMs, msAtCycle } from '../../shared/timeline.ts';
 import { createEngine } from '../engine/engine.ts';
 import type { ClockSync, Engine, EngineOptions } from '../engine/types.ts';
+import { TokenBucket } from '../ui/cooldown.ts';
 import { sideLetter } from '../ui/format.ts';
 import { applyScheduleUpdate, applySnapshotToStores, appendNote, pruneSections, recordEtch, sectionAtCycle } from '../ui/stores.ts';
 import { MockScore } from './mock-score.ts';
@@ -140,6 +141,7 @@ export async function createMockRoom(options: RoomOptions, overrides: Partial<Mo
 
   let fork: ForkState | null = null;
   let forkSeq = 0;
+  const votes = new TokenBucket(RATE_LIMITS.vote, performance.now());
   let nextForkAt = Math.floor(MOCK_START_CYCLE) - 2;
 
   const composerState = (state: ComposerStatus['state'], now: number): ComposerStatus => {
@@ -460,10 +462,15 @@ export async function createMockRoom(options: RoomOptions, overrides: Partial<Mo
       pushRequests();
       return { ok: true, id };
     },
-    vote(forkId: string, option: 'A' | 'B' | 'C') {
-      if (!fork || fork.id !== forkId || fork.result) return;
+    vote(forkId: string, option: 'A' | 'B' | 'C'): boolean {
+      if (!votes.take(performance.now())) {
+        stores.nack.set({ event: 'vote', reason: 'rate-limited', at: Date.now() });
+        return true;
+      }
+      if (!fork || fork.id !== forkId || fork.result) return true;
       fork = { ...fork, myVote: option };
       updateTally();
+      return true;
     },
     poke() {},
   };

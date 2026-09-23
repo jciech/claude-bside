@@ -3,7 +3,7 @@
   import { RATE_LIMITS } from '../../../shared/music.ts';
   import type { RequestCard, RequestStatus } from '../../../shared/protocol.ts';
   import { useRoom } from '../context.ts';
-  import { TokenBucket } from '../cooldown.ts';
+  import { requestSpent, TokenBucket } from '../cooldown.ts';
   import { REQUEST_FINAL, REQUEST_STATUS_LABEL, requestErrorText } from '../format.ts';
 
   const MAX = 140;
@@ -48,7 +48,7 @@
     e.preventDefault();
     const value = text.trim();
     if (!value || sending) return;
-    if (!bucket.take(performance.now())) {
+    if (!bucket.ready(performance.now())) {
       error = requestErrorText('rate-limited');
       return;
     }
@@ -56,6 +56,7 @@
     error = null;
     const res = await room.actions.request(value);
     sending = false;
+    if (requestSpent(res)) bucket.take(performance.now());
     if (res.ok) {
       pending = { id: res.id, text: value };
       seen.set(res.id, 'received');

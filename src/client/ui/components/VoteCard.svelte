@@ -1,18 +1,31 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
+  import { Ballot, type Pick, type VoteOption } from '../ballot.ts';
   import { useRoom } from '../context.ts';
   import { nackText, plural } from '../format.ts';
 
   const { room, pulse } = useRoom();
-  const { fork, nack } = room.stores;
+  const { fork, nack, connection } = room.stores;
   const bar = pulse.bar;
 
-  let picked = $state<{ forkId: string; option: 'A' | 'B' | 'C' } | null>(null);
+  let picked = $state<Pick | null>(null);
   let problem = $state<string | null>(null);
+  const ballot = new Ballot({
+    send: (forkId, option) => room.actions.vote(forkId, option),
+    shown: (pick) => (picked = pick),
+    offline: () => (problem = 'You’re offline. Your vote will need resending.'),
+    now: () => performance.now(),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id as ReturnType<typeof setTimeout>),
+  });
+  onDestroy(() => ballot.reset());
 
   const f = $derived($fork);
   const cycle = $derived(Number.isFinite($bar) ? $bar : 0);
   const mine = $derived(f ? (picked?.forkId === f.id ? picked.option : f.myVote) : null);
   const closed = $derived(!!f && (f.result !== null || cycle >= f.closesAtCycle));
+  // Out of the room a vote can't be sent, and a radio checked anyway would claim one.
+  const offline = $derived($connection !== 'live');
   const left = $derived(f ? Math.max(0, Math.ceil(f.closesAtCycle - cycle)) : 0);
   const leader = $derived(f ? Object.entries(f.tally).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null : null);
 
@@ -24,16 +37,18 @@
     return f.result.binding ? `The room decided: ${o?.label ?? f.result.option}.${lands}` : `The room leans ${o?.label ?? f.result.option} — Claude takes it as advice.${lands}`;
   });
 
+  $effect(() => ballot.fork($fork));
   $effect(() => {
     const n = $nack;
-    if (n?.event === 'vote' && Date.now() - n.at < 5000) problem = nackText(n.reason);
+    if (n?.event !== 'vote' || Date.now() - n.at >= 5000) return;
+    problem = nackText(n.reason);
+    ballot.refused();
   });
 
-  function vote(option: 'A' | 'B' | 'C'): void {
-    if (!f || closed) return;
-    picked = { forkId: f.id, option };
+  function vote(option: VoteOption): void {
+    if (!f || closed || offline) return;
     problem = null;
-    room.actions.vote(f.id, option);
+    ballot.choose(f.id, option);
   }
 </script>
 
@@ -45,7 +60,7 @@
     {/if}
   </h2>
   {#if f}
-    <fieldset class="options" disabled={closed}>
+    <fieldset class="options" disabled={closed || offline}>
       <legend id="vote-legend" tabindex="-1">{f.prompt}</legend>
       {#each f.options as o (o.id)}
         {@const share = f.tally[o.id] ?? 0}

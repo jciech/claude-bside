@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { TokenBucket } from '../../src/client/ui/cooldown.ts';
+import { requestSpent, TokenBucket } from '../../src/client/ui/cooldown.ts';
 import { RATE_LIMITS } from '../../src/shared/music.ts';
+import { Sim } from '../room/sim.ts';
 
 describe('TokenBucket (mirror of the server buckets)', () => {
   it('allows the burst, then one token per interval', () => {
@@ -25,5 +26,32 @@ describe('TokenBucket (mirror of the server buckets)', () => {
     expect(b.level(10 * 60_000)).toBe(1);
     expect(b.take(10 * 60_000)).toBe(true);
     expect(b.ready(10 * 60_000 + 59_000)).toBe(false);
+  });
+});
+
+describe('the ask cooldown', () => {
+  it('is spent only on answers the server’s request bucket paid for', () => {
+    expect(requestSpent({ ok: true, id: 'r1' })).toBe(true);
+    // room-busy is checked after the listener's own bucket; a timed-out ask may well have arrived.
+    for (const error of ['rate-limited', 'room-busy', 'timeout'] as const) expect(requestSpent({ ok: false, error })).toBe(true);
+    for (const error of ['too-early', 'empty', 'invalid', 'hello-first', 'offline'] as const) expect(requestSpent({ ok: false, error })).toBe(false);
+  });
+
+  it('lets a listener ask again as soon as the warm-up that refused them is over', () => {
+    const sim = new Sim();
+    const [l] = sim.join(1);
+    const mirror = new TokenBucket(RATE_LIMITS.request, sim.now);
+    const ask = (): string => {
+      if (!mirror.ready(sim.now)) return 'cooling down';
+      const res = sim.crowd.request(l!.socketId, { text: 'more cowbell' }, sim.now);
+      if (requestSpent(res)) mirror.take(sim.now);
+      return res.ok ? 'ok' : res.error;
+    };
+    expect(ask()).toBe('too-early');
+    sim.warmUp(12_000);
+    expect(ask()).toBe('ok');
+    expect(ask()).toBe('cooling down');
+    sim.warmUp(60_000);
+    expect(ask()).toBe('ok');
   });
 });

@@ -7,7 +7,7 @@
   import type { LatheHost, SideSection } from '../../render/protocol.ts';
   import { useRoom } from '../context.ts';
   import { composerByline, sideLetter } from '../format.ts';
-  import { mediaQuery } from '../media.ts';
+  import { mediaQuery, onPixelRatioChange } from '../media.ts';
   import { nowPlaying } from '../now.ts';
 
   let { entered }: { entered: boolean } = $props();
@@ -44,6 +44,7 @@
       host?.resize(width, height, devicePixelRatio || 1);
     });
     ro.observe(box!);
+    const offRatio = onPixelRatioChange((dpr) => host?.resize(size.w, size.h, dpr));
     let cancelled = false;
     let offs: (() => void)[] = [];
     // Draw only once the clock is synced: before that the engine's "now" is not the room's bar.
@@ -67,6 +68,7 @@
     return () => {
       cancelled = true;
       ro.disconnect();
+      offRatio();
       for (const off of offs) off();
       host?.destroy();
     };
