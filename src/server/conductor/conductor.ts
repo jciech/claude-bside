@@ -167,6 +167,10 @@ interface Inflight {
   abortReason: string | null;
   /** The section the plan follows and where it ended when the deadlines were last set. */
   anchorEnd: { id: string; cycle: number; ms: number } | null;
+  /** The hard deadline it was issued with, before any Stay or Move on moved it. */
+  issuedHardDeadlineMs: number;
+  /** The deadline it missed was the room's: a replan's, or one a Move on pulled in (see expire). */
+  roomDeadline: boolean;
 }
 
 interface CommitOptions {
@@ -1105,6 +1109,8 @@ export function createConductor(deps: ConductorDeps): Conductor {
       expiredAtMs: 0,
       abortReason: null,
       anchorEnd: anchor ? { id: anchor.id, cycle: plannedEnd(anchor), ms: msAtCycle(timeline, plannedEnd(anchor)) } : null,
+      issuedHardDeadlineMs: t.hard,
+      roomDeadline: false,
     };
     inflight = inf;
     lastAuthor = choice.author;
@@ -1164,13 +1170,19 @@ export function createConductor(deps: ConductorDeps): Conductor {
       inf.expiredAtMs ||= nowMs();
       return;
     }
-    log.warn('conductor: planning request missed its deadline', { request: inf.request.id, author: inf.author });
+    // A Move on that left less than the usual compose time made the deadline the room's, like a replan's.
+    const hadMs = (inf.expiredAtMs || nowMs()) - inf.startedAtMs;
+    const movedOn = inf.request.hardDeadlineMs < inf.issuedHardDeadlineMs && hadMs < p90ComposeMs();
+    inf.roomDeadline = inf.replaces.length > 0 || movedOn;
+    log.warn('conductor: planning request missed its deadline', { request: inf.request.id, author: inf.author, movedOn });
     abortRequest(inf, 'deadline');
     if (inf.author !== 'scripted') {
       addHealthNote(
         inf.replaces.length
           ? `Replan ${inf.request.id} missed its deadline; the provisional section stands.`
-          : `Request ${inf.request.id} missed its deadline; the autopilot filled the slot.`,
+          : movedOn
+            ? `Request ${inf.request.id} ran out of time after the room moved on; the autopilot filled the slot.`
+            : `Request ${inf.request.id} missed its deadline; the autopilot filled the slot.`,
       );
     }
     if (!inf.replaces.length) void fallbackCommit(inf.request.context.request.reasons);
@@ -1180,13 +1192,13 @@ export function createConductor(deps: ConductorDeps): Conductor {
   function finishRequest(inf: Inflight, outcome: ComposeOutcome): void {
     const now = nowMs();
     if (inf.author === 'claude') {
-      // Only Claude's own finishes time a compose; one cut off by its deadline took at least the p90 so far.
+      // Only Claude's own finishes time a compose; one cut off by its own deadline took at least the p90 so far.
       const elapsed = outcome.usage?.ms ?? now - inf.startedAtMs;
       if (inf.abortReason === null) composeMs.push(elapsed);
-      else if (inf.abortReason === 'deadline') composeMs.push(Math.max(elapsed, p90ComposeMs()));
+      else if (inf.abortReason === 'deadline' && !inf.roomDeadline) composeMs.push(Math.max(elapsed, p90ComposeMs()));
       if (composeMs.length > 20) composeMs.shift();
-      // A replan's deadline is the room's, not a sign that Claude is failing.
-      const attributable = inf.accepted ? !inf.fulfilledExternally : inf.abortReason === null || (inf.abortReason === 'deadline' && !inf.replaces.length);
+      // A deadline the room set (a replan's, or one a Move on pulled in) is not a sign that Claude is failing.
+      const attributable = inf.accepted ? !inf.fulfilledExternally : inf.abortReason === null || (inf.abortReason === 'deadline' && !inf.roomDeadline);
       if (attributable && inf.accepted) {
         breaker.failures = 0;
         breaker.openUntil = null;

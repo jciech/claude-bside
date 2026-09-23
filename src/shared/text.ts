@@ -24,18 +24,25 @@ export function sanitizePlainText(input: string, max: number): string {
     .slice(0, max);
 }
 
+const MAX_REQUEST_CHARS = 140;
+const hasUrl = (text: string) => new RegExp(URLISH.source, 'i').test(text);
+
 /**
- * Listener request text: plain text with URLs removed. URLs are removed from the cleaned text, so an
- * invisible character, an angle bracket or a lookalike dot (NFKC) can't hide one until cleaning
- * joins it back up.
+ * Listener request text: plain text with URLs removed. URLs are found in the cleaned text, so an
+ * invisible character or an angle bracket can't hide one until cleaning joins it back up, and in its
+ * NFKC form, so a lookalike (a fullwidth dot, letters) can't either. Only text that hides a URL is
+ * kept in that folded form; anything else keeps what was typed (Korean jamo, x²).
  */
 export function sanitizeRequestText(input: string): string {
+  const typed = sanitizePlainText(input, MAX_REQUEST_CHARS);
+  if (!hasUrl(typed) && !hasUrl(sanitizePlainText(typed.normalize('NFKC'), Infinity))) return typed;
   let text = sanitizePlainText(input.normalize('NFKC'), Infinity);
+  // Until nothing changes: removing one URL, or the cut to length, can join or end another.
   for (let before = ''; before !== text; ) {
     before = text;
-    text = text.replace(URLISH, '');
+    text = sanitizePlainText(text.replace(URLISH, ''), MAX_REQUEST_CHARS);
   }
-  return sanitizePlainText(text, 140);
+  return text;
 }
 
 /** True when composer-authored public text is acceptable as-is (no URLs, markup or control chars). */

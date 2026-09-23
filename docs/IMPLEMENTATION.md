@@ -102,7 +102,7 @@ export function createRoomClock(opts: { timeline: Timeline; now?: () => number; 
 // src/server/room/crowd.ts — a Crowd plus the lifecycle only main.ts drives (CrowdRuntime in types.ts)
 export function createCrowd(opts: { broadcaster: Broadcaster; config: ServerConfig; store: Store; log: Logger; now?: () => number; timers?: CrowdTimers }): CrowdRuntime;
 // src/server/room/socket.ts
-export function createRoomServer(http: HttpServer, config: ServerConfig): RoomServer;  // websocket only, same-origin, small messages
+export function createRoomServer(http: HttpServer, config: ServerConfig, now?: () => number): RoomServer;  // websocket only, same-origin, small messages; per-network caps and connect rate at the handshake
 export function createBroadcaster(io: Server): Broadcaster;                   // emits to the 'live' room / a listener's sockets
 export function attachRoom(io: RoomServer, deps: { crowd: Crowd; conductor: Conductor; clock: RoomClock; config: ServerConfig; log: Logger }): () => void;  // returns detach
 // src/server/http/security.ts

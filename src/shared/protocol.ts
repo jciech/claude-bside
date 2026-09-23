@@ -276,8 +276,11 @@ export const REQUEST_ERRORS = ['hello-first', 'invalid', 'empty', 'too-early', '
 export type RequestError = (typeof REQUEST_ERRORS)[number];
 export type RequestAck = { ok: true; id: string } | { ok: false; error: RequestError };
 
-/** Admission refusals before any listener state exists: the `connect_error` message. */
-export const CONNECT_ERRORS = ['server-full', 'too-many-connections', 'rate-limited'] as const;
+/**
+ * Admission refusals before any listener state exists: the `connect_error` message. A handshake over
+ * the per-network connect rate is refused by engine.io itself, without a message.
+ */
+export const CONNECT_ERRORS = ['server-full', 'too-many-connections'] as const;
 export type ConnectError = (typeof CONNECT_ERRORS)[number];
 
 export const isConnectError = (message: string): message is ConnectError => (CONNECT_ERRORS as readonly string[]).includes(message);

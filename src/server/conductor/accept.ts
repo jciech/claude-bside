@@ -364,12 +364,14 @@ export interface AutomatedPart {
 const EDGE_BARS = 4;
 
 /**
- * The rise a section's automation lanes add, which its measured spans leave out (the checker plays the
- * code at static faders and default knob values). Intensity: the measured end scaled by how much of the
- * mix's fader level (lanes, entries and exits) is still missing in the first bars. Tension: knobs swept
- * toward their bright or intense end (the axis they follow; toward max when they follow none), weighted
- * by each part's share of the end mix, up to the +0.3 a brightening mix can measure (half the mix swept
- * across the whole range).
+ * The rise a section's automation lanes promise, read from the lanes alone. The measured spans already
+ * play level and knob lanes (the checker applies them like the performer), so this is a second
+ * estimate, taken with max() and never added to the measured rise: it credits a fade or a sweep the
+ * descriptors under-read. Intensity: the measured end scaled by how much of the mix's fader level
+ * (lanes, entries and exits) is still missing in the first bars. Tension: knobs swept toward their
+ * bright or intense end (the axis they follow; toward max when they follow none), weighted by each
+ * part's share of the end mix, up to the +0.3 a brightening mix can measure (half the mix swept across
+ * the whole range).
  */
 export function automationRise(parts: readonly AutomatedPart[], bars: number, measuredEnd: number): { intensity: number; tension: number } {
   const edge = Math.min(EDGE_BARS, bars);

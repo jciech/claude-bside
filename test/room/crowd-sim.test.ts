@@ -218,6 +218,20 @@ describe('E. sybils', () => {
     expect(replans(everyone.slice(0, 5), venue)).toBeGreaterThan(0);
   });
 
+  it('beside two listeners elsewhere, a crowd of sockets on one network is still two voices', () => {
+    const sim = new Sim();
+    sim.join(2);
+    sim.warmUp();
+    const sybils = sim.join(30, { address: (i) => `66.66.66.${(i % 250) + 1}` });
+    sim.warmUp();
+    sim.run(600, () => {
+      for (const s of sybils) sim.pad(s, 1, 1, true);
+    });
+    // 2 / (2 + β·2) = 0.8 at most: they lean on the fast lane, but alone they are no quorum.
+    expect(sim.pull().x).toBeLessThan(0.81);
+    expect(sim.count('replan-pressure')).toBe(0);
+  });
+
   it('sockets from one network cannot keep the room trimmed with Too much', () => {
     const sim = new Sim();
     sim.join(20);
@@ -247,6 +261,156 @@ describe('E. sybils', () => {
     expect(honest.z).toBeGreaterThanOrEqual(2);
     expect(crowded.perListenerPerMin).toBeGreaterThan(0.85 * honest.perListenerPerMin);
     expect(crowded.z).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/** Listeners on one /24: a venue, an office, a household. */
+const behindNat = (sim: Sim, count: number) => sim.join(count, { address: (i) => `203.0.113.${(i % 250) + 1}` });
+
+/** Each pusher sets the pad to (1, 1) `stagger` seconds after the one before, and again every 60 s. */
+const pushStaggered = (sim: Sim, pushers: SimListener[], seconds: number, stagger = 3) =>
+  sim.run(seconds, (t) => {
+    pushers.forEach((l, k) => {
+      if (t >= k * stagger && (t - k * stagger) % 60 === 0) sim.pad(l, 1, 1, true);
+    });
+  });
+
+const tooMuch = (sim: Sim, l: SimListener) => sim.crowd.react(l.socketId, { type: 'harsh', heardCycle: sim.cycle }, sim.cycle, sim.now);
+const moveOnPress = (sim: Sim, l: SimListener, sectionId: string) => sim.crowd.keep(l.socketId, { v: -1, sectionId, heardCycle: sim.cycle }, sim.cycle, sim.now);
+
+describe('L. rooms behind one network', () => {
+  it('one listener outside a NAT’d crowd cannot keep the room trimmed with Too much', () => {
+    const trims = (venue: number, outsiders: number) => {
+      const sim = new Sim();
+      behindNat(sim, venue);
+      const [outsider] = sim.join(outsiders);
+      sim.warmUp();
+      sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'drop' });
+      sim.run(600, (t) => {
+        if (t % 8 === 0) tooMuch(sim, outsider!);
+      });
+      return sim.count('harsh');
+    };
+    expect(trims(10, 1)).toBe(0);
+    expect(trims(60, 1)).toBe(0);
+    expect(trims(20, 2)).toBe(0);
+  });
+
+  it('one NAT group of 10 plus 1 outsider: the outsider is one voice of eleven', () => {
+    const sim = new Sim();
+    const venue = behindNat(sim, 10);
+    const [outsider] = sim.join(1);
+    sim.warmUp();
+    sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'groove' });
+    let worst = 0;
+    sim.run(300, (t) => {
+      sim.pad(outsider!, -1, -1, true);
+      if (t % 8 === 0) tooMuch(sim, outsider!);
+      if (t % 10 === 0) moveOnPress(sim, outsider!, 'ep-1');
+      worst = Math.min(worst, sim.pull().x, sim.pull().y);
+    });
+    // As in any room of eleven: 1 / (1 + β·10) ≈ 0.29 at most.
+    expect(worst).toBeGreaterThan(-0.3);
+    expect(sim.signals).toEqual([]);
+    // The venue itself still steers, with or without the outsider joining in.
+    const alone = new Sim();
+    const room = behindNat(alone, 10);
+    alone.join(1);
+    alone.warmUp();
+    pushStaggered(alone, room.slice(0, 6), 600);
+    expect(alone.count('replan-pressure')).toBeGreaterThan(0);
+    const together = new Sim();
+    const all = [...behindNat(together, 10), ...together.join(1)];
+    together.warmUp();
+    pushStaggered(together, all, 600);
+    expect(together.count('replan-pressure')).toBeGreaterThan(0);
+  });
+
+  it('a NAT’d crowd is bored without waiting for a silent outsider', () => {
+    const sim = new Sim();
+    const venue = behindNat(sim, 10);
+    sim.join(1);
+    sim.warmUp();
+    sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'groove' });
+    sim.run(60, (t) => {
+      if (t === 10) for (const l of venue.slice(0, 5)) moveOnPress(sim, l, 'ep-1');
+    });
+    expect(sim.count('bored')).toBe(1);
+  });
+
+  it('staggered gestures reach the replan quorum: a NAT group plus one outsider, and three separate listeners', () => {
+    const replans = (office: number, remote: number, stagger = 3) => {
+      const sim = new Sim();
+      const everyone = [...behindNat(sim, office), ...sim.join(remote)];
+      sim.warmUp();
+      pushStaggered(sim, everyone, 600, stagger);
+      return sim.count('replan-pressure');
+    };
+    expect(replans(6, 1)).toBeGreaterThan(0);
+    expect(replans(3, 1)).toBeGreaterThan(0);
+    expect(replans(2, 1)).toBeGreaterThan(0);
+    expect(replans(0, 3)).toBeGreaterThan(0);
+    expect(replans(0, 3, 30)).toBeGreaterThan(0);
+  });
+
+  it('two listeners on one Wi-Fi: either can trim, both are needed to replan or move on', () => {
+    const pair = () => {
+      const sim = new Sim();
+      const two = behindNat(sim, 2);
+      sim.warmUp();
+      sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'groove' });
+      return { sim, two };
+    };
+    const trim = pair();
+    trim.sim.run(30, (t) => {
+      if (t === 5) tooMuch(trim.sim, trim.two[0]!);
+    });
+    expect(trim.sim.count('harsh')).toBe(1);
+
+    const solo = pair();
+    pushStaggered(solo.sim, [solo.two[0]!], 300);
+    solo.sim.run(60, (t) => {
+      if (t === 5) moveOnPress(solo.sim, solo.two[0]!, 'ep-1');
+    });
+    expect(solo.sim.count('replan-pressure')).toBe(0);
+    expect(solo.sim.count('keep')).toBe(0);
+
+    const both = pair();
+    pushStaggered(both.sim, both.two, 300, 20);
+    expect(both.sim.count('replan-pressure')).toBeGreaterThan(0);
+    const moved = pair();
+    moved.sim.run(60, (t) => {
+      if (t === 5) moveOnPress(moved.sim, moved.two[0]!, 'ep-1');
+      if (t === 25) moveOnPress(moved.sim, moved.two[1]!, 'ep-1');
+    });
+    expect(moved.sim.count('keep')).toBeGreaterThan(0);
+  });
+
+  it('a troll behind the same NAT as the room is one voice of ten; with a friend, still not a quorum', () => {
+    const sim = new Sim();
+    const [troll] = behindNat(sim, 10);
+    sim.warmUp();
+    sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'groove' });
+    let worst = 0;
+    sim.run(300, (t) => {
+      sim.pad(troll!, -1, -1, true);
+      tooMuch(sim, troll!);
+      if (t % 10 === 0) moveOnPress(sim, troll!, 'ep-1');
+      worst = Math.min(worst, sim.pull().x, sim.pull().y);
+    });
+    expect(worst).toBeGreaterThan(-0.35);
+    expect(sim.signals).toEqual([]);
+    // Two of ten can't replan (as in any room of ten); three can.
+    const two = new Sim();
+    const room = behindNat(two, 10);
+    two.warmUp();
+    pushStaggered(two, room.slice(0, 2), 600);
+    expect(two.count('replan-pressure')).toBe(0);
+    const three = new Sim();
+    const room3 = behindNat(three, 10);
+    three.warmUp();
+    pushStaggered(three, room3.slice(0, 3), 600);
+    expect(three.count('replan-pressure')).toBeGreaterThan(0);
   });
 });
 

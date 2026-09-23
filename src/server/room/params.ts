@@ -9,7 +9,8 @@ export const CROWD = {
   warmupMs: 10_000,
   /**
    * Total weight of one network (/24 IPv4, config.ipv6Prefix IPv6); it also counts as at most this
-   * many voices in the Kish n_eff quorums.
+   * many voices in the Kish n_eff quorums. Not for a network holding more than half of the capped
+   * weight: that one is the room, and its listeners count one by one.
    */
   networkWeightCap: 2,
   /** Silent-majority prior: a non-participant counts as a β-weight vote for "as it is". */
@@ -26,6 +27,12 @@ export const CROWD = {
   pressureHoldBars: 24,
   replanCooldownBars: 32,
   pressureQuorum: 3,
+  /**
+   * Kish n_eff only reaches a head count when every voice weighs the same, and freshness decays from
+   * each listener's own gesture: a quorum q is met at n_eff ≥ min(q, N) − quorumSlack. One network
+   * (≤ 2 voices) still can't reach a quorum of 3.
+   */
+  quorumSlack: 0.5,
   /** Keep ballots: freshness exp(−age / keepFreshMs), EMA τ keepTauMs, act at |K| > keepOn for keepHoldBars. */
   keepFreshMs: 90_000,
   keepTauMs: 10_000,
@@ -64,7 +71,7 @@ export const CROWD = {
     maxKept: 2000,
   },
   fork: { bindingShare: 0.5, bindingTurnout: 0.2, advisoryShare: 0.4, advisoryTurnout: 0.1 },
-  /** A client error is corroborated once trusted listeners on this many networks report it. */
+  /** A client error is corroborated once trusted listeners on this many networks report it (or two on the room's own network). */
   telemetry: { maxSampled: 20, maxSampledPerNetwork: 2, trustedTrust: 0.6, corroborateNetworks: 2, maxCorroborated: 8 },
   frameMs: 250,
   frameKeepaliveMs: 5_000,
