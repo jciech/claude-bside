@@ -23,7 +23,8 @@ export default defineConfig({
     { name: 'phone', use: { ...devices['Pixel 7'] } },
   ],
   webServer: {
-    command: `npm run build && BSIDE_COMPOSER=scripted BSIDE_DATA_DIR=.e2e-data PORT=${PORT} npm start`,
+    // Synth-only autopilot: the sandboxed browser can't fetch GitHub-hosted samples.
+    command: `npm run build && rm -rf .e2e-data && BSIDE_COMPOSER=scripted BSIDE_AUTOPILOT=synth BSIDE_DATA_DIR=.e2e-data PORT=${PORT} npm start`,
     url: `http://localhost:${PORT}/api/health`,
     timeout: 180_000,
     reuseExistingServer: !process.env.CI,
