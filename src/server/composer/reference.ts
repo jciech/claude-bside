@@ -3,6 +3,7 @@
 // data, re-sanitised, and referred to by id everywhere else.
 import type { Catalog } from '../../shared/catalog.ts';
 import type { PlanReason, TurnContext } from '../../shared/composer-api.ts';
+import { namesScheduledPart } from '../../shared/protocol.ts';
 import { sanitizeRequestText } from '../../shared/text.ts';
 import { renderCatalog } from './prompt/catalog.ts';
 import { PLAN, ROLE, ROOM, RULES, WORKFLOW } from './prompt/guide.ts';
@@ -48,10 +49,28 @@ function task(ctx: TurnContext): string {
   return lines.join('\n');
 }
 
+/**
+ * Client errors carry ids a listener's browser reported: only those naming a section and part this
+ * context shows are rendered (the conductor already drops the rest; this keeps the prompt safe alone).
+ */
+function shownClientErrors(context: TurnContext): TurnContext['health']['clientErrors'] {
+  const shown = [
+    ...(context.now ? [context.now] : []),
+    ...context.committed,
+    ...context.request.replacing,
+    ...context.history.repriseCandidates.map((r) => ({ id: r.sectionId, parts: r.parts })),
+  ];
+  return context.health.clientErrors.filter((e) => namesScheduledPart(shown, e));
+}
+
 /** The user message for one compose call. */
 export function renderTurn(context: TurnContext): string {
   const { requests, ...crowd } = context.crowd;
-  const visible = { ...context, crowd: { ...crowd, requests: requests.map((r) => ({ id: r.id, support: r.support, supporters: r.supporters, ageSec: r.ageSec })) } };
+  const visible = {
+    ...context,
+    crowd: { ...crowd, requests: requests.map((r) => ({ id: r.id, support: r.support, supporters: r.supporters, ageSec: r.ageSec })) },
+    health: { ...context.health, clientErrors: shownClientErrors(context) },
+  };
   const untrusted = requests.map((r) => ({ id: r.id, text: sanitizeRequestText(r.text) }));
   return [
     '<turn_context>',

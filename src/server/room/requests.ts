@@ -38,6 +38,12 @@ export class RequestBook {
   readonly #records = new Map<string, RequestRecord>();
   /** Merge key → id of the open (non-terminal) request with that key. */
   readonly #open = new Map<string, string>();
+  /** Listener → ids of the requests they support, so cards never scan the whole book. */
+  readonly #bySupporter = new Map<string, Set<string>>();
+  /** Creation order, which breaks ties among a listener's own cards. */
+  readonly #order = new WeakMap<RequestRecord, number>();
+  /** Decided requests with a public reply, latest decision first (creation order on ties); null after a change. */
+  #public: RequestRecord[] | null = null;
 
   has(id: string): boolean {
     return this.#records.has(id);
@@ -54,10 +60,12 @@ export class RequestBook {
     const open = openId ? this.#records.get(openId) : undefined;
     if (open) {
       open.supporters.set(listenerId, { at: nowMs, text });
+      this.#supports(listenerId, open.id);
       return { record: open, merged: true };
     }
+    const seq = this.#seq++;
     const record: RequestRecord = {
-      id: `rq-${this.#prefix}${(this.#seq++).toString(36)}`,
+      id: `rq-${this.#prefix}${seq.toString(36)}`,
       key,
       text,
       createdAt: nowMs,
@@ -71,7 +79,9 @@ export class RequestBook {
       surged: false,
     };
     this.#records.set(record.id, record);
+    this.#order.set(record, seq);
     this.#open.set(key, record.id);
+    this.#supports(listenerId, record.id);
     this.#prune();
     return { record, merged: false };
   }
@@ -141,6 +151,7 @@ export class RequestBook {
     r.publicReply = sanitizePlainText(d.publicReply, 140) || null;
     r.sectionId = d.sectionId;
     r.decidedAt = nowMs;
+    this.#public = null;
     return r;
   }
 
@@ -183,22 +194,60 @@ export class RequestBook {
     return out;
   }
 
-  /** The listener's own requests (with their own wording) plus up to 20 public decided ones. */
+  /**
+   * The listener's own requests (with their own wording, newest first) plus up to 20 public decided
+   * ones they don't support. Costs the listener's own requests plus a walk down the public list, so
+   * sending everyone their cards doesn't scan the book once per listener.
+   */
   cardsFor(listenerId: string): RequestCard[] {
-    const own: RequestCard[] = [];
-    const decided: RequestRecord[] = [];
-    for (const r of this.#records.values()) {
-      const mine = r.supporters.get(listenerId);
-      if (mine) own.push(toCard(r, mine.text, mine.at));
-      else if (r.publicReply !== null && r.decidedAt !== null) decided.push(r);
+    const own: { r: RequestRecord; at: number; text: string }[] = [];
+    for (const id of this.#bySupporter.get(listenerId) ?? []) {
+      const r = this.#records.get(id);
+      const mine = r?.supporters.get(listenerId);
+      if (r && mine) own.push({ r, ...mine });
     }
-    own.sort((a, b) => b.createdAt - a.createdAt);
-    decided.sort((a, b) => b.decidedAt! - a.decidedAt!);
-    return [...own.slice(0, P.ownCards), ...decided.slice(0, P.publicCards).map((r) => toCard(r, null, r.createdAt))];
+    own.sort((a, b) => b.at - a.at || this.#order.get(a.r)! - this.#order.get(b.r)!);
+    const cards = own.slice(0, P.ownCards).map(({ r, text, at }) => toCard(r, text, at));
+    let publicCards = 0;
+    for (const r of this.#publicList()) {
+      if (publicCards >= P.publicCards) break;
+      if (r.supporters.has(listenerId)) continue;
+      cards.push(toCard(r, null, r.createdAt));
+      publicCards++;
+    }
+    return cards;
   }
 
   forget(listenerId: string): void {
-    for (const r of this.#records.values()) if (TERMINAL.has(r.status)) r.supporters.delete(listenerId);
+    const ids = this.#bySupporter.get(listenerId);
+    if (!ids) return;
+    for (const id of ids) {
+      const r = this.#records.get(id);
+      if (r && !TERMINAL.has(r.status)) continue;
+      r?.supporters.delete(listenerId);
+      ids.delete(id);
+    }
+    if (!ids.size) this.#bySupporter.delete(listenerId);
+  }
+
+  #supports(listenerId: string, id: string): void {
+    const ids = this.#bySupporter.get(listenerId) ?? new Set<string>();
+    ids.add(id);
+    this.#bySupporter.set(listenerId, ids);
+  }
+
+  #publicList(): RequestRecord[] {
+    this.#public ??= [...this.#records.values()].filter((r) => r.publicReply !== null && r.decidedAt !== null).sort((a, b) => b.decidedAt! - a.decidedAt!);
+    return this.#public;
+  }
+
+  #delete(r: RequestRecord): void {
+    this.#records.delete(r.id);
+    for (const listenerId of r.supporters.keys()) {
+      const ids = this.#bySupporter.get(listenerId);
+      if (ids?.delete(r.id) && ids.size === 0) this.#bySupporter.delete(listenerId);
+    }
+    this.#public = null;
   }
 
   #setStatus(r: RequestRecord, status: RequestStatus): void {
@@ -211,13 +260,13 @@ export class RequestBook {
     if (this.#records.size <= P.maxKept) return;
     for (const r of this.#records.values()) {
       if (this.#records.size <= P.maxKept) break;
-      if (TERMINAL.has(r.status)) this.#records.delete(r.id);
+      if (TERMINAL.has(r.status)) this.#delete(r);
     }
     // Everything open: drop the oldest regardless.
     for (const r of this.#records.values()) {
       if (this.#records.size <= P.maxKept) break;
       this.#setStatus(r, 'expired');
-      this.#records.delete(r.id);
+      this.#delete(r);
     }
   }
 }

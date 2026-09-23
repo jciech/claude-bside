@@ -9,6 +9,8 @@ export interface Voice<T> {
   /** 0..1; 0 = silent (no input, stale, or not yet allowed to steer). */
   freshness: number;
   value: T | null;
+  /** The listener's network; voices without one count as networks of their own. */
+  network?: string;
 }
 
 export interface Split {
@@ -22,7 +24,7 @@ export interface PadAggregate {
   target: PadPoint;
   /** Σ w·s / Σ w. */
   turnout: number;
-  /** Kish effective number of participants (Σ w·s)² / Σ (w·s)². */
+  /** Kish effective number of participants (Σ w·s)² / Σ (w·s)², one network counting as at most networkWeightCap. */
   effectiveVoices: number;
   /** 1 − (weighted RMS distance of participants from their mean) / √2. */
   consensus: number;
@@ -41,9 +43,9 @@ export function aggregatePad(voices: readonly Voice<PadPoint>[], beta: number = 
   let sx = 0;
   let sy = 0;
   let part = 0;
-  let part2 = 0;
   let silent = 0;
   const participants: PadAggregate['participants'] = [];
+  const voiced: { network?: string; ws: number }[] = [];
   for (const v of voices) {
     if (v.weight <= 0) continue;
     if (v.value && v.freshness > CROWD.minFreshness) {
@@ -51,9 +53,9 @@ export function aggregatePad(voices: readonly Voice<PadPoint>[], beta: number = 
       sx += ws * v.value.x;
       sy += ws * v.value.y;
       part += ws;
-      part2 += ws * ws;
       silent += v.weight * (1 - v.freshness);
       participants.push({ weight: ws, point: v.value });
+      voiced.push({ network: v.network, ws });
     } else silent += v.weight;
   }
   const denom = part + beta * silent;
@@ -68,7 +70,7 @@ export function aggregatePad(voices: readonly Voice<PadPoint>[], beta: number = 
   return {
     target: { x: sx / denom, y: sy / denom },
     turnout: part / (part + silent),
-    effectiveVoices: part2 > 0 ? (part * part) / part2 : 0,
+    effectiveVoices: effectiveVoices(voiced),
     consensus,
     split: detectSplit(participants),
     participants,
@@ -119,20 +121,46 @@ export function detectSplit(points: readonly { weight: number; point: PadPoint }
 export function aggregateKeep(voices: readonly Voice<1 | -1>[], beta: number = CROWD.silentPrior): KeepAggregate {
   let sum = 0;
   let part = 0;
-  let part2 = 0;
   let silent = 0;
+  const voiced: { network?: string; ws: number }[] = [];
   for (const v of voices) {
     if (v.weight <= 0) continue;
     if (v.value !== null && v.freshness > CROWD.minFreshness) {
       const ws = v.weight * v.freshness;
       sum += ws * v.value;
       part += ws;
-      part2 += ws * ws;
       silent += v.weight * (1 - v.freshness);
+      voiced.push({ network: v.network, ws });
     } else silent += v.weight;
   }
   const denom = part + beta * silent;
-  return { value: denom > 0 ? sum / denom : 0, effectiveVoices: part2 > 0 ? (part * part) / part2 : 0 };
+  return { value: denom > 0 ? sum / denom : 0, effectiveVoices: effectiveVoices(voiced) };
+}
+
+/**
+ * Kish effective number of voices (Σ x)² / Σ x², with one network counting as at most `cap` equal
+ * voices: the weight cap scales a network's members alike, which alone leaves n_eff unchanged.
+ */
+export function effectiveVoices(voiced: readonly { network?: string; ws: number }[], cap: number = CROWD.networkWeightCap): number {
+  const networks = new Map<string, { sum: number; sumSq: number }>();
+  let sum = 0;
+  let sumSq = 0;
+  for (const { network, ws } of voiced) {
+    if (network === undefined) {
+      sum += ws;
+      sumSq += ws * ws;
+      continue;
+    }
+    const n = networks.get(network) ?? { sum: 0, sumSq: 0 };
+    n.sum += ws;
+    n.sumSq += ws * ws;
+    networks.set(network, n);
+  }
+  for (const n of networks.values()) {
+    sum += n.sum;
+    sumSq += Math.max(n.sumSq, (n.sum * n.sum) / cap);
+  }
+  return sumSq > 0 ? (sum * sum) / sumSq : 0;
 }
 
 /** Caps the summed weight of each network at `cap`, scaling its members proportionally. */

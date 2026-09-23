@@ -134,6 +134,13 @@ describe('plain text', () => {
   it('removes urls from requests', () => {
     expect(sanitizeRequestText('more bass at https://evil.example/x please')).toBe('more bass at please');
   });
+  it('removes urls hidden by invisible characters, angle brackets or lookalike dots', () => {
+    for (const hidden of ['play evil\u200B.com', 'play evil<.com', 'play evil\uFF0Ecom', 'play evil.c\u00ADom/x', 'play www\u2060.evil.io', 'play http<s://x.y']) {
+      expect(sanitizeRequestText(hidden)).toBe('play');
+    }
+    expect(sanitizeRequestText('so\u00ADft \u2060hidden\u{E0041}\u{E0042} words\u061C')).toBe('soft hidden words');
+    expect(isPublicText('soft\u00ADhyphen')).toBe(false);
+  });
   it('flags urls and markup in public text', () => {
     expect(isPublicText('Down into the harbour')).toBe(true);
     expect(isPublicText('see www.example.com')).toBe(false);

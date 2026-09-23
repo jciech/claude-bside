@@ -9,7 +9,7 @@ import type { AuditionResult, CommitBody, CommitResult, ComposerApiStatus, Drive
 import { bpmToCps, cpsToBpm, DEFAULT_BPM, type SectionRole } from '../../shared/music.ts';
 import { PlanSchema, type AuditionInput, type Plan, type RequestDecision } from '../../shared/plan.ts';
 import { EMPTY_MIXER, type MixerState, type MovementInfo, type SectionProgram } from '../../shared/program.ts';
-import type { ComposerStatus, LinerNote, LinerNoteKind, PadPoint, RequestStatus, ScheduleUpdate } from '../../shared/protocol.ts';
+import { namesScheduledPart, type ComposerStatus, type LinerNote, type LinerNoteKind, type PadPoint, type RequestStatus, type ScheduleUpdate } from '../../shared/protocol.ts';
 import {
   HORIZON_TRIGGER_MIN_S,
   MIN_CHANGE_LEAD_S,
@@ -1410,6 +1410,8 @@ export function createConductor(deps: ConductorDeps): Conductor {
     const live = new Set(sections.map((s) => s.id));
     for (const key of seenClientErrors) if (!live.has(key.split('|')[0]!)) seenClientErrors.delete(key);
     for (const e of crowd.corroboratedErrors(since)) {
+      // Live ids only: the prune above drops any other key, which would then fire on every tick.
+      if (!namesScheduledPart(sections, e)) continue;
       const key = `${e.sectionId}|${e.partId}|${e.code}`;
       if (seenClientErrors.has(key)) continue;
       seenClientErrors.add(key);

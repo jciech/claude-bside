@@ -188,6 +188,10 @@ describe('room connection', () => {
     t.socket.fire('welcome', welcome());
     t.engine.needResync();
     expect(t.socket.of('hello')).toHaveLength(3);
+    // A refused resync (the server limits hellos per socket) is no longer in flight.
+    t.socket.fire('nack', { event: 'hello', reason: 'rate-limited' });
+    t.engine.needResync();
+    expect(t.socket.of('hello')).toHaveLength(4);
   });
 
   it('routes room events to the engine and the stores', () => {

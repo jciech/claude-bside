@@ -6,6 +6,7 @@ import type { CrowdSummary, PlanReason, ReplacedSection, SectionSummary, TurnCon
 import type { PartDigest } from '../../shared/analysis.ts';
 import { BPM_MAX, BPM_MIN, cpsToBpm, MAX_PARTS_PER_SECTION, SECTION_LENGTHS, type SectionRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
+import { namesScheduledPart } from '../../shared/protocol.ts';
 import { cpsAtMs, cycleAtMs, msAtCycle, type Timeline } from '../../shared/timeline.ts';
 import { budgetState, expectedSections, type Arc, type BudgetSpan } from './arc.ts';
 import { knobValuesAt } from './knobs.ts';
@@ -220,7 +221,8 @@ export function buildTurnContext(input: TurnContextInput): TurnContext {
       recentScales: scales,
     },
     novelty: { cooldown: input.cooldown, flags: input.flags, crate: input.crate },
-    health: input.health,
+    // Client-reported ids reach a composer only when they name the live schedule.
+    health: { ...input.health, clientErrors: input.health.clientErrors.filter((e) => namesScheduledPart(input.sections, e)) },
     rules: {
       bpm: movement ? [Math.max(BPM_MIN, movement.bpm - 4), Math.min(BPM_MAX, movement.bpm + 4)] : [BPM_MIN, BPM_MAX],
       maxBpmDeltaInMovement: 4,

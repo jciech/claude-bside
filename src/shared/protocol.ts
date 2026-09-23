@@ -5,7 +5,7 @@
 // Every client→server payload is validated with these zod schemas before it touches state.
 // All `*Ms` / `serverTime` fields are server clock: performance.timeOrigin + performance.now().
 import { z } from 'zod';
-import { DOCK_REACTIONS, type EtchType } from './music.ts';
+import { DOCK_REACTIONS, PART_ID_PATTERN, type EtchType } from './music.ts';
 import type { Timeline } from './timeline.ts';
 import type { MixerState, MovementInfo, SectionProgram } from './program.ts';
 
@@ -161,6 +161,12 @@ export interface RoomSnapshot {
 export const TELEMETRY_ERROR_CODES = ['eval', 'query', 'density', 'sound-missing', 'preload', 'late-schedule', 'clip'] as const;
 export type TelemetryErrorCode = (typeof TELEMETRY_ERROR_CODES)[number];
 
+/**
+ * A telemetry error names a section and a part by the ids the server issued ('' = none: the whole
+ * section, or no section at all). The server keeps only errors naming its live schedule.
+ */
+const orNone = (id: z.ZodString) => z.union([z.literal(''), id]);
+
 export const TelemetrySchema = z
   .object({
     cycle: z.number().refine(Number.isFinite),
@@ -172,8 +178,8 @@ export const TelemetrySchema = z
       .array(
         z
           .object({
-            sectionId: z.string().max(24),
-            partId: z.string().max(16),
+            sectionId: orNone(z.string().regex(/^[A-Za-z0-9_-]{1,24}$/)),
+            partId: orNone(z.string().regex(PART_ID_PATTERN)),
             code: z.enum(TELEMETRY_ERROR_CODES),
           })
           .strict(),
@@ -183,6 +189,12 @@ export const TelemetrySchema = z
   })
   .strict();
 export type Telemetry = z.infer<typeof TelemetrySchema>;
+
+/** Whether a telemetry error names one of `sections` and one of its parts ('' = the whole section). */
+export function namesScheduledPart(sections: readonly { id: string; parts: readonly { id: string }[] }[], e: { sectionId: string; partId: string }): boolean {
+  const section = sections.find((s) => s.id === e.sectionId);
+  return section !== undefined && (e.partId === '' || section.parts.some((p) => p.id === e.partId));
+}
 
 // ─── Client → server ────────────────────────────────────────────────────────────────────────────
 

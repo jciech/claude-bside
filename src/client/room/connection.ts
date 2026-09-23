@@ -254,6 +254,7 @@ export function connectRoom(options: RoomOptions, overrides: Partial<ConnectionD
   socket.on('composer', (status) => stores.composer.set(status));
   socket.on('nack', (nack) => {
     stores.nack.set({ ...nack, at: Date.now() });
+    if (nack.event === 'hello') resyncing = false;
     if (nack.event === 'hello' && FULL_ON_HELLO.has(nack.reason)) stores.connection.set('full');
   });
 

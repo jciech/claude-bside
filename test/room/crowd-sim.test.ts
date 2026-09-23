@@ -192,6 +192,62 @@ describe('E. sybils', () => {
     });
     expect(sim.pull().x).toBeLessThan(-0.5);
   });
+
+  it('one network holding the pad counts as at most two voices: no early replan without a quorum', () => {
+    const replans = (pushers: SimListener[], sim: Sim) => {
+      sim.warmUp();
+      sim.run(600, () => {
+        for (const l of pushers) sim.pad(l, 1, 1, true);
+      });
+      return sim.count('replan-pressure');
+    };
+    const oneNet = (count: number) => {
+      const sim = new Sim();
+      sim.join(6);
+      return replans(sim.join(count, { address: (i) => `203.0.113.${(i % 250) + 1}` }), sim);
+    };
+    expect(oneNet(3)).toBe(0);
+    expect(oneNet(30)).toBe(0);
+    // Three people on three networks are a quorum…
+    const three = new Sim();
+    three.join(6);
+    expect(replans(three.join(3), three)).toBeGreaterThan(0);
+    // …and a room entirely behind one network (a venue, localhost) can still reach one.
+    const venue = new Sim();
+    const everyone = venue.join(9, { address: (i) => `192.168.1.${i + 1}` });
+    expect(replans(everyone.slice(0, 5), venue)).toBeGreaterThan(0);
+  });
+
+  it('sockets from one network cannot keep the room trimmed with Too much', () => {
+    const sim = new Sim();
+    sim.join(20);
+    const sybils = sim.join(5, { address: (i) => `203.0.113.${i + 1}` });
+    sim.warmUp();
+    sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'drop' });
+    sim.run(600, (t) => {
+      if (t % 8 === 0) for (const s of sybils) sim.crowd.react(s.socketId, { type: 'harsh', heardCycle: sim.cycle }, sim.cycle, sim.now);
+    });
+    expect(sim.count('harsh')).toBe(0);
+  });
+
+  it('silent sockets from one network do not dilute the room’s reactions', () => {
+    const fire = (sybils: number) => {
+      const sim = new Sim();
+      const room = sim.join(20);
+      sim.join(sybils, { address: (i) => `203.0.113.${(i % 250) + 1}` });
+      sim.warmUp();
+      sim.crowd.sectionStarted({ id: 'ep-1', startCycle: 0, bars: 32, role: 'drop' });
+      sim.run(60, (t) => {
+        if (t === 10) for (let i = 0; i < 6; i++) sim.crowd.react(room[i]!.socketId, { type: 'fire', heardCycle: sim.cycle }, sim.cycle, sim.now);
+      });
+      return sim.crowd.reactionStats(0, sim.bar + 1).fire;
+    };
+    const honest = fire(0);
+    const crowded = fire(60);
+    expect(honest.z).toBeGreaterThanOrEqual(2);
+    expect(crowded.perListenerPerMin).toBeGreaterThan(0.85 * honest.perListenerPerMin);
+    expect(crowded.z).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('K. whiplash', () => {

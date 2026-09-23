@@ -19,7 +19,7 @@ import { sanitizeRequestText } from '../../shared/text.ts';
 import type { Broadcaster, CrowdRuntime, CrowdSignal, CrowdSource, Logger, Nack, ServerConfig, Store } from '../types.ts';
 import { STORE_KEYS } from '../types.ts';
 import { aggregateKeep, aggregatePad, capByNetwork, type KeepAggregate, type PadAggregate, type Voice } from './aggregate.ts';
-import { createBucket, take, type Bucket, type Rate } from './buckets.ts';
+import { createBucket, KeyedBuckets, take, type Bucket, type Rate } from './buckets.ts';
 import { serverNow } from './clock.ts';
 import { createIdentity, hueOf, networkKey } from './identity.ts';
 import { CROWD, roomSlewPerSec, roomTauSec } from './params.ts';
@@ -71,6 +71,7 @@ interface ReactionRecord {
   cycle: number;
   at: number;
   listenerId: string;
+  network: string;
   weight: number;
   hue: number;
 }
@@ -126,9 +127,12 @@ export function createCrowd(opts: {
   const identity = createIdentity(config.secret);
   const listeners = new Map<string, Listener>();
   const socketOwner = new Map<string, string>();
+  /** Ids of listeners with no socket left, per network, in the order they left. */
+  const detached = new Map<string, Set<string>>();
   const book = new RequestBook();
   const telemetryStore = new TelemetryStore();
   const roomRequests = createBucket(CROWD.requests.roomRate, now());
+  const networkRequests = new KeyedBuckets(CROWD.requests.networkRate);
   const known = loadIdentities();
 
   let reactions: ReactionRecord[] = [];
@@ -137,7 +141,7 @@ export function createCrowd(opts: {
   ) as Record<Reaction, { mean: number; variance: number }>;
   const sections: SectionMark[] = [];
   let current: SectionMark | null = null;
-  const barMarks = new Map<number, { ms: number; listeners: number }>();
+  const barMarks = new Map<number, { ms: number; weight: number }>();
   let lastTick: { bar: number; ms: number } | null = null;
   let barMs = DEFAULT_BAR_MS;
 
@@ -148,6 +152,11 @@ export function createCrowd(opts: {
   let lastPad: PadAggregate = aggregatePad([]);
   let lastKeep: KeepAggregate = { value: 0, effectiveVoices: 0 };
   let lastListeners = 0;
+  /** Present listeners with each network counted as at most networkWeightCap (the n_eff quorums' N). */
+  let lastVoices = 0;
+  let lastNetworks = 0;
+  /** Σ w over present listeners: the audience reactions are measured against. */
+  let lastWeight = 0;
   let pressureHeld = 0;
   let lastReplanBar = -Infinity;
   let keepHeld = 0;
@@ -191,9 +200,17 @@ export function createCrowd(opts: {
     return out;
   }
 
+  /** Keeps a listener's trust for their return. Identities that never warmed up aren't kept, so churn can't push out those that did. */
+  function remember(l: Listener, t: number): boolean {
+    const audibleMs = Math.min(audibleMsAt(l, t), CROWD.trustRampMs);
+    if (audibleMs < CROWD.warmupMs) return false;
+    known.set(l.id, { audibleMs, seenAt: t });
+    return true;
+  }
+
   function persist(): void {
     const t = now();
-    for (const l of listeners.values()) known.set(l.id, { audibleMs: Math.min(audibleMsAt(l, t), CROWD.trustRampMs), seenAt: t });
+    for (const l of listeners.values()) remember(l, t);
     const rows = [...known.entries()]
       .filter(([, v]) => t - v.seenAt <= CROWD.identity.maxAgeMs)
       .sort((a, b) => b[1].seenAt - a[1].seenAt)
@@ -275,12 +292,20 @@ export function createCrowd(opts: {
     const w = weights(t);
     const padVoices: Voice<PadPoint>[] = [];
     const keepVoices: Voice<1 | -1>[] = [];
+    const heads = new Map<string, number>();
+    let present = 0;
     for (const [l, weight] of w) {
       const point = livePad(l, t);
-      padVoices.push({ weight, value: point, freshness: point ? Math.exp(-(t - l.pad!.at) / CROWD.padFreshMs) : 0 });
+      padVoices.push({ weight, value: point, freshness: point ? Math.exp(-(t - l.pad!.at) / CROWD.padFreshMs) : 0, network: l.network });
       const ballot = l.ballot && current && l.ballot.sectionId === current.id && eligible(l, t) ? l.ballot : null;
-      keepVoices.push({ weight, value: ballot?.v ?? null, freshness: ballot ? Math.exp(-(t - ballot.at) / CROWD.keepFreshMs) : 0 });
+      keepVoices.push({ weight, value: ballot?.v ?? null, freshness: ballot ? Math.exp(-(t - ballot.at) / CROWD.keepFreshMs) : 0, network: l.network });
+      heads.set(l.network, (heads.get(l.network) ?? 0) + 1);
+      present += weight;
     }
+    lastVoices = 0;
+    for (const n of heads.values()) lastVoices += Math.min(n, CROWD.networkWeightCap);
+    lastNetworks = heads.size;
+    lastWeight = present;
     const pad = aggregatePad(padVoices);
     const ballots = aggregateKeep(keepVoices);
     if (t > smoothedAt) {
@@ -315,17 +340,18 @@ export function createCrowd(opts: {
     return lastTick ? lastTick.ms + (bar - lastTick.bar) * barMs : bar * barMs;
   }
 
-  function listenersOver(from: number, to: number): number {
+  /** Mean present weight over [from, to): sockets crowding in from one network add at most its cap. */
+  function audienceOver(from: number, to: number): number {
     let sum = 0;
     let n = 0;
     for (let bar = Math.ceil(from); bar < to; bar++) {
       const mark = barMarks.get(bar);
       if (mark) {
-        sum += mark.listeners;
+        sum += mark.weight;
         n++;
       }
     }
-    return n ? sum / n : lastListeners;
+    return n ? sum / n : lastWeight;
   }
 
   function sectionAt(cycle: number): SectionMark | null {
@@ -334,28 +360,33 @@ export function createCrowd(opts: {
   }
 
   /**
-   * Weighted reactions per listener per minute over [from, to). Beyond the one-per-4-bar-window
-   * rule, one listener contributes at most one reaction per minute, so a single enthusiast can't
-   * manufacture a loved moment (or a safety trim) on their own.
+   * Weighted reactions per listener per minute over [from, to), against the room's present weight
+   * (a room of full-weight listeners: its head count). Beyond the one-per-4-bar-window rule, one
+   * listener contributes at most one reaction per minute, so a single enthusiast can't manufacture
+   * a loved moment (or a safety trim) on their own.
    */
   function rates(from: number, to: number) {
     const minutes = Math.max(0, msAtBar(to) - msAtBar(from)) / 60_000;
-    const audience = listenersOver(from, to);
-    const perListener = new Map<string, { type: Reaction; listenerId: string; count: number; weight: number }>();
+    const audience = audienceOver(from, to);
+    const perListener = new Map<string, { type: Reaction; listenerId: string; network: string; count: number; weight: number }>();
     for (const r of reactions) {
       if (r.cycle < from || r.cycle >= to) continue;
       const key = `${r.type}\u0000${r.listenerId}`;
-      const entry = perListener.get(key) ?? { type: r.type, listenerId: r.listenerId, count: 0, weight: 0 };
+      const entry = perListener.get(key) ?? { type: r.type, listenerId: r.listenerId, network: r.network, count: 0, weight: 0 };
       entry.count++;
       entry.weight += r.weight;
       perListener.set(key, entry);
     }
     const cap = Math.max(1, minutes * CROWD.reactionMaxPerListenerPerMin);
     const sums = Object.fromEntries(REACTIONS.map((r) => [r, 0])) as Record<Reaction, number>;
-    const reporters = Object.fromEntries(REACTIONS.map((r) => [r, new Set<string>()])) as Record<Reaction, Set<string>>;
+    const reporters = Object.fromEntries(REACTIONS.map((r) => [r, { listeners: new Set<string>(), networks: new Set<string>() }])) as Record<
+      Reaction,
+      { listeners: Set<string>; networks: Set<string> }
+    >;
     for (const e of perListener.values()) {
       sums[e.type] += e.weight * Math.min(1, cap / e.count);
-      reporters[e.type].add(e.listenerId);
+      reporters[e.type].listeners.add(e.listenerId);
+      reporters[e.type].networks.add(e.network);
     }
     const perMin = (type: Reaction) => sums[type] / Math.max(1, audience) / Math.max(minutes, CROWD.reactionMinMinutes);
     return { minutes, audience, perMin, reporters };
@@ -377,7 +408,7 @@ export function createCrowd(opts: {
   /** Folds a finished section's reaction rates into the 15-minute EW baseline. */
   function closeSection(section: SectionMark, endCycle: number): void {
     const r = rates(section.startCycle, endCycle);
-    if (r.minutes <= 0 || r.audience < 1) return;
+    if (r.minutes <= 0 || r.audience <= 0) return;
     const a = 1 - Math.exp(-(r.minutes * 60_000) / CROWD.reactionBaselineMs);
     for (const type of REACTIONS) {
       const b = baselines[type];
@@ -399,7 +430,7 @@ export function createCrowd(opts: {
     const window = Math.floor(heardCycle / CROWD.reactionWindowBars);
     if ((l.counted.get(type) ?? -Infinity) >= window) return;
     l.counted.set(type, window);
-    reactions.push({ type, etch, cycle: heardCycle, at: t, listenerId: l.id, weight, hue: l.hue });
+    reactions.push({ type, etch, cycle: heardCycle, at: t, listenerId: l.id, network: l.network, weight, hue: l.hue });
     if (reactions.length > MAX_REACTIONS) reactions.splice(0, reactions.length - MAX_REACTIONS);
   }
 
@@ -535,14 +566,7 @@ export function createCrowd(opts: {
       }
     }
     for (const l of listeners.values()) {
-      if (l.sockets.size === 0 && l.disconnectedAt !== null && t - l.disconnectedAt > CROWD.forgetAfterMs) {
-        known.set(l.id, { audibleMs: Math.min(l.audibleMs, CROWD.trustRampMs), seenAt: t });
-        identitiesDirty = true;
-        listeners.delete(l.id);
-        telemetryStore.forget(l.id);
-        book.forget(l.id);
-        stateVersion++;
-      }
+      if (l.sockets.size === 0 && l.disconnectedAt !== null && t - l.disconnectedAt > CROWD.forgetAfterMs) forget(l, t);
     }
     const cutoff = t - REACTION_KEEP_MS;
     if (reactions.length && reactions[0]!.at < cutoff) reactions = reactions.filter((r) => r.at >= cutoff);
@@ -616,7 +640,39 @@ export function createCrowd(opts: {
     if (l.sockets.size === 0) {
       l.disconnectedAt = t;
       l.sampled = false;
+      park(l, t);
     }
+    stateVersion++;
+  }
+
+  /**
+   * A listener who left keeps their identity for forgetAfterMs, but one network keeps at most
+   * maxDetachedPerNetwork of them (the longest gone are forgotten first): reconnecting over and over
+   * without a token can't fill the room.
+   */
+  function park(l: Listener, t: number): void {
+    const parked = detached.get(l.network) ?? new Set<string>();
+    parked.add(l.id);
+    detached.set(l.network, parked);
+    for (const id of parked) {
+      if (parked.size <= CROWD.maxDetachedPerNetwork) break;
+      const gone = listeners.get(id);
+      if (gone) forget(gone, t);
+      else parked.delete(id);
+    }
+  }
+
+  function unpark(l: Listener): void {
+    const parked = detached.get(l.network);
+    if (parked?.delete(l.id) && parked.size === 0) detached.delete(l.network);
+  }
+
+  function forget(l: Listener, t: number): void {
+    if (remember(l, t)) identitiesDirty = true;
+    unpark(l);
+    listeners.delete(l.id);
+    telemetryStore.forget(l.id);
+    book.forget(l.id);
     stateVersion++;
   }
 
@@ -626,14 +682,17 @@ export function createCrowd(opts: {
 
   return {
     join(socketId, hello, address, nowMs) {
+      const bound = owner(socketId);
+      // One socket is one listener: a repeated hello (a resync) gets the listener it already has.
+      if (bound) return { listenerId: bound.id, hue: bound.hue, token: identity.issue(hello.anonId, bound.id, nowMs), telemetry: bound.sampled };
       const verified = identity.verify(hello.anonId, hello.token, nowMs);
       const existing = verified ? listeners.get(verified) : undefined;
       if (!existing && listeners.size >= CROWD.maxListeners) return nack('hello', 'room-full');
-      if (existing && existing.sockets.size >= CROWD.maxSocketsPerListener && !existing.sockets.has(socketId)) return nack('hello', 'too-many-tabs');
-      if (socketOwner.has(socketId)) detach(socketId, nowMs);
+      if (existing && existing.sockets.size >= CROWD.maxSocketsPerListener) return nack('hello', 'too-many-tabs');
       const network = networkKey(address, config.ipv6Prefix);
       const listenerId = verified ?? identity.newListenerId();
       const l = existing ?? newListener(listenerId, network, nowMs);
+      unpark(l);
       listeners.set(l.id, l);
       accrue(l, nowMs);
       l.network = network;
@@ -697,6 +756,7 @@ export function createCrowd(opts: {
       if (!text) return refuse('empty');
       if (!eligible(l, nowMs)) return refuse('too-early');
       if (limited(l, 'request', nowMs)) return refuse('rate-limited');
+      if (!networkRequests.take(l.network, nowMs)) return refuse('room-busy');
       if (!take(roomRequests, CROWD.requests.roomRate, nowMs)) return refuse('room-busy');
       const { record } = book.submit(l.id, text, nowMs);
       sendCardsToSupporters([record]);
@@ -732,7 +792,7 @@ export function createCrowd(opts: {
       if (lastTick && bar === lastTick.bar + 1 && nowMs > lastTick.ms) barMs += 0.2 * (nowMs - lastTick.ms - barMs);
       lastTick = { bar, ms: nowMs };
       advance(nowMs);
-      barMarks.set(bar, { ms: nowMs, listeners: lastListeners });
+      barMarks.set(bar, { ms: nowMs, weight: lastWeight });
       if (barMarks.size > MAX_BAR_MARKS) barMarks.delete(barMarks.keys().next().value!);
 
       const signals: CrowdSignal[] = [];
@@ -742,7 +802,8 @@ export function createCrowd(opts: {
       const dx = pull.x - (2 * baseline.brightness - 1);
       const dy = pull.y - (2 * baseline.intensity - 1);
       const magnitude = Math.max(Math.abs(dx), Math.abs(dy));
-      if (n > 0 && magnitude > CROWD.pressureOn && lastPad.effectiveVoices >= Math.max(1, Math.min(CROWD.pressureQuorum, n))) pressureHeld++;
+      const quorum = (q: number) => Math.max(1, Math.min(q, lastVoices));
+      if (n > 0 && magnitude > CROWD.pressureOn && lastPad.effectiveVoices >= quorum(CROWD.pressureQuorum)) pressureHeld++;
       else if (magnitude < CROWD.pressureOff) pressureHeld = 0;
       if (pressureHeld >= CROWD.pressureHoldBars && bar - lastReplanBar >= CROWD.replanCooldownBars) {
         const axis = Math.abs(dx) >= Math.abs(dy) ? 'brightness' : 'intensity';
@@ -752,18 +813,27 @@ export function createCrowd(opts: {
       }
 
       // Stay / Move on: repeats every bar while the lean holds, until consumeKeep() or the next section.
-      if (current && Math.abs(keep) > CROWD.keepOn && lastKeep.effectiveVoices >= Math.max(1, Math.min(CROWD.keepQuorum, n))) keepHeld++;
+      if (current && Math.abs(keep) > CROWD.keepOn && lastKeep.effectiveVoices >= quorum(CROWD.keepQuorum)) keepHeld++;
       else keepHeld = 0;
       if (current && keepHeld >= CROWD.keepHoldBars) signals.push({ type: 'keep', direction: keep > 0 ? 1 : -1, sectionId: current.id });
 
       if (current) {
         const r = rates(current.startCycle, bar + 1);
-        const enoughReporters = (type: Reaction) => r.reporters[type].size >= Math.min(2, Math.max(1, n));
+        // Distinct reporters, and on distinct networks unless the whole room shares one.
+        const enoughReporters = (type: Reaction) =>
+          r.reporters[type].listeners.size >= Math.min(2, Math.max(1, n)) && r.reporters[type].networks.size >= Math.min(2, Math.max(1, lastNetworks));
         // A repeat trim needs fresh evidence: at least one Too much since the last one.
         const harsh = reactions.filter((x) => x.type === 'harsh' && x.at > lastHarshAt);
         if (harsh.length && bar - lastHarshBar >= CROWD.harshCooldownBars) {
           const recent = new Set(harsh.filter((x) => x.cycle >= bar - CROWD.harshWindowBars).map((x) => x.listenerId));
-          const share = n > 0 ? recent.size / n : 0;
+          // A share of the room's (network-capped) weight, not of heads.
+          const w = weights(nowMs);
+          let reported = 0;
+          for (const id of recent) {
+            const l = listeners.get(id);
+            if (l) reported += w.get(l) ?? 0;
+          }
+          const share = lastWeight > 0 ? reported / lastWeight : 0;
           if (share >= CROWD.harshShare || (enoughReporters('harsh') && zOf('harsh', r.perMin('harsh')) >= CROWD.reactionZ)) {
             signals.push({ type: 'harsh' });
             lastHarshBar = bar;
@@ -836,13 +906,11 @@ export function createCrowd(opts: {
 
     corroboratedErrors(sinceCycle) {
       const t = now();
-      let sampled = 0;
-      for (const l of listeners.values()) if (l.sampled) sampled++;
       const isTrusted = (id: string) => {
         const l = listeners.get(id);
         return Boolean(l && trust(l, t) >= CROWD.telemetry.trustedTrust);
       };
-      return telemetryStore.corroborated(sinceCycle, isTrusted, sampled);
+      return telemetryStore.corroborated(sinceCycle, isTrusted);
     },
 
     reactionStats,

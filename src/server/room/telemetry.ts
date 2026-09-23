@@ -67,10 +67,11 @@ export class TelemetryStore {
   }
 
   /**
-   * Error codes reported for the same part by ≥ 2 trusted listeners on different networks, or by
-   * ≥ 20 % of the sampled clients.
+   * Error codes reported for the same part by trusted listeners on ≥ 2 different networks, whatever
+   * the size of the room: one listener, or one network, never corroborates itself. The most
+   * widely reported first, at most `CROWD.telemetry.maxCorroborated`.
    */
-  corroborated(sinceCycle: number, isTrusted: (listenerId: string) => boolean, sampledClients: number): CorroboratedError[] {
+  corroborated(sinceCycle: number, isTrusted: (listenerId: string) => boolean): CorroboratedError[] {
     const groups = new Map<string, { head: ErrorReport; listeners: Set<string>; networks: Set<string> }>();
     for (const r of this.#errors.values()) {
       if (r.cycle < sinceCycle || !isTrusted(r.listenerId)) continue;
@@ -83,12 +84,9 @@ export class TelemetryStore {
     const T = CROWD.telemetry;
     const out: CorroboratedError[] = [];
     for (const { head, listeners, networks } of groups.values()) {
-      const clients = listeners.size;
-      const byNetworks = clients >= T.corroborateClients && networks.size >= T.corroborateClients;
-      const byShare = sampledClients > 0 && clients >= Math.ceil(T.corroborateShare * sampledClients);
-      if (byNetworks || byShare) out.push({ sectionId: head.sectionId, partId: head.partId, code: head.code, clients });
+      if (networks.size >= T.corroborateNetworks) out.push({ sectionId: head.sectionId, partId: head.partId, code: head.code, clients: listeners.size });
     }
-    return out.sort((a, b) => b.clients - a.clients);
+    return out.sort((a, b) => b.clients - a.clients).slice(0, T.maxCorroborated);
   }
 
   forget(listenerId: string): void {

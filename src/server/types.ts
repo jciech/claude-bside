@@ -175,6 +175,10 @@ export interface JoinResult {
 }
 
 export interface Crowd {
+  /**
+   * One socket is one listener: the first hello on a socket attaches it to the listener its token
+   * names (or a new one); a repeated hello on that socket resyncs the same listener, whatever it presents.
+   */
   join(socketId: string, hello: Hello, address: string, nowMs: number): JoinResult | Nack;
   leave(socketId: string, nowMs: number): void;
   heartbeat(socketId: string, hb: Heartbeat, nowMs: number): Nack | null;
@@ -183,6 +187,7 @@ export interface Crowd {
   react(socketId: string, r: ReactInput, cycle: number, nowMs: number): Nack | null;
   request(socketId: string, r: RequestInput, nowMs: number): RequestAck;
   vote(socketId: string, v: VoteInput, nowMs: number): Nack | null;
+  /** `t.errors` must already name only sections and parts of the live schedule (the socket layer drops the rest). */
   telemetry(socketId: string, t: Telemetry, nowMs: number): Nack | null;
 
   /** Once per bar: smoothing, ballots, replan hysteresis. Returns signals for the conductor. */
@@ -204,7 +209,10 @@ export interface Crowd {
   audibleListeners(nowMs: number): number;
   /** Median of sampled clients' telemetry over the window, for descriptor refinement. */
   telemetryDigest(fromCycle: number, toCycle: number): { rmsDb: number; centroidHz: number; clipPct: number; clients: number } | null;
-  /** Corroborated client errors (≥ 2 distinct trusted listeners, or ≥ 20 % of sampled ones). */
+  /**
+   * Corroborated client errors: reported by trusted listeners on ≥ 2 networks, most widely reported
+   * first, at most 8. Their ids named the live schedule when reported; it may have moved on since.
+   */
   corroboratedErrors(sinceCycle: number): { sectionId: string; partId: string; code: Telemetry['errors'][number]['code']; clients: number }[];
   /** Per-section reaction rates as z-scores against the room's 15-min baseline. */
   reactionStats(fromCycle: number, toCycle: number): CrowdSummary['reactions'];
