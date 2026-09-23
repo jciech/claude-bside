@@ -5,6 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createChecker } from '../../src/server/check/checker.ts';
 import { isCarryName } from '../../src/server/composer/carry.ts';
+import { baseTitle } from '../../src/server/composer/autopilot.ts';
 import { LIBRARY } from '../../src/server/composer/library/index.ts';
 import { createScriptedComposer } from '../../src/server/composer/scripted.ts';
 import type { MovementInfo, SectionProgram } from '../../src/shared/program.ts';
@@ -61,7 +62,7 @@ function sides(room: Room, startedAt: ReadonlyMap<string, number>) {
   return ids.slice(0, -1).map((id, i) => {
     const first = played.find((s) => s.movementId === id)!;
     const next = played.find((s) => s.movementId === ids[i + 1])!;
-    const ensemble = LIBRARY.find((e) => played.some((s) => s.movementId === id && e.titles.includes(s.name)))?.id ?? '?';
+    const ensemble = LIBRARY.find((e) => played.some((s) => s.movementId === id && e.titles.includes(baseTitle(s.name))))?.id ?? '?';
     return { id, ensemble, groove: info.get(id)?.groove, minutes: (startedAt.get(next.id)! - startedAt.get(first.id)!) / 60_000 };
   });
 }
@@ -111,6 +112,11 @@ describe('the autopilot with the real conductor and checker', () => {
     const heard = sides(room, startedAt);
     expect(heard.length).toBeGreaterThanOrEqual(2);
     expectRotation(heard);
+    // A side never shows the same title twice for different music (repeats are numbered).
+    for (const id of new Set(played.map((s) => s.movementId))) {
+      const names = played.filter((s) => s.movementId === id).map((s) => s.name);
+      expect(new Set(names).size, names.join(', ')).toBe(names.length);
+    }
     expect([...new Set(played.map((s) => s.role))]).toEqual(expect.arrayContaining(['intro', 'groove', 'build', 'drop', 'breakdown', 'outro']));
     // Consecutive sections of one ensemble continue their parts instead of restarting them.
     expect(played.some((s) => s.parts.some((p) => p.continues))).toBe(true);

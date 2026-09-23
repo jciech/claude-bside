@@ -141,11 +141,23 @@ function usedNames(ctx: TurnContext): string[] {
   return sectionsSoFar(ctx).map((s) => s.name);
 }
 
-/** A title not heard lately: an unused one if any is left, else the one used longest ago. */
-function pickTitle(titles: readonly string[], used: readonly string[], seed: number): string {
-  const fresh = titles.filter((t) => !used.includes(t));
+const NUMERALS = ['II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX'];
+const NUMBERED = new RegExp(` (?:${NUMERALS.join('|')})$`);
+
+/** The library title a section name was made from ("Click Theory II" → "Click Theory"). */
+export const baseTitle = (name: string): string => name.replace(NUMBERED, '');
+
+/**
+ * A title not heard lately: an unused one if any is left, else the one used longest ago, numbered
+ * ("Click Theory II") so a side never shows the same name twice for different music.
+ */
+export function pickTitle(titles: readonly string[], used: readonly string[], seed: number): string {
+  const bases = used.map(baseTitle);
+  const fresh = titles.filter((t) => !bases.includes(t));
   if (fresh.length) return fresh[seed % fresh.length]!;
-  return [...titles].sort((a, b) => used.lastIndexOf(a) - used.lastIndexOf(b))[0]!;
+  const title = [...titles].sort((a, b) => bases.lastIndexOf(a) - bases.lastIndexOf(b))[0]!;
+  const n = used.filter((u) => baseTitle(u) === title).length;
+  return n === 0 ? title : `${title} ${NUMERALS[Math.min(n, NUMERALS.length) - 1]}`;
 }
 
 function pick<T>(items: readonly T[], used: ReadonlySet<T>, seed: number): T {
@@ -171,7 +183,7 @@ function recentEnsembles(lib: AutopilotLibrary, ctx: TurnContext): Ensemble[] {
   const out: Ensemble[] = [];
   for (const s of sectionsSoFar(ctx).reverse()) {
     if (isCarryName(s.name)) continue;
-    const ens = lib.ensembles.find((e) => e.titles.includes(s.name));
+    const ens = lib.ensembles.find((e) => e.titles.includes(baseTitle(s.name)));
     if (ens && !out.includes(ens)) out.push(ens);
   }
   return out;
@@ -182,7 +194,7 @@ function occurrences(ctx: TurnContext, ens: Ensemble, role: SectionRole, planned
   const titles = new Set(ens.titles);
   let n = planned.filter((r) => r === role).length;
   for (const s of sectionsSoFar(ctx).reverse()) {
-    if (!titles.has(s.name)) break;
+    if (!titles.has(baseTitle(s.name))) break;
     if (s.role === role) n++;
     if (s.role === 'intro') break;
   }
