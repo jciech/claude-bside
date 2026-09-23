@@ -94,8 +94,6 @@ npm run catalog        # rebuild the sound catalog from pinned sample repositori
 The full list (logging, listen address, per-network limits, effort) is in
 [`docs/ARCHITECTURE.md` §16](docs/ARCHITECTURE.md#16-operating-it).
 
-The original proof of concept lives in `legacy/` for reference.
-
 ## License and credits
 
 AGPL-3.0-or-later, as Strudel is; a hosted room must offer its source (the room links to it).

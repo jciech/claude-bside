@@ -27,7 +27,7 @@ design everything is built against. The typed contracts are normative and live i
 
 ## 1. What the proof of concept taught us
 
-The first version (kept in `legacy/` for reference) proved the idea. The research behind this
+The first version (in the git history before this rebuild) proved the idea. The research behind this
 redesign measured its failures rather than guessing:
 
 | Problem | What actually happened |
@@ -680,7 +680,6 @@ palette/             vendored maps, levels.json, catalog.json (generated)
 scripts/             build-catalog.ts, render-audio.ts, gen-allowlist.ts
 test/                vitest unit + integration, per module; test/fixtures; browser harnesses
 e2e/                 Playwright tests (scripted driver, no API key needed)
-legacy/              the proof of concept, for reference
 ```
 
 ## 15. Testing
