@@ -131,7 +131,7 @@ async function snapshotFor(t0: number): Promise<EngineSnapshot> {
     return { epoch: 'samples', rev: 1, timeline, mixer, sections: [section('s-1', parts)] };
   }
   if (mode === 'bomb') {
-    const bomb = 's("white*16").fast(16).superimpose(x => x.late(0.001)).superimpose(x => x.late(0.002)).gain(0.05)';
+    const bomb = 's("white*16").fast(16).superimpose(x => x.late(0.001)).gain(0.05)';
     return { epoch: 'bomb', rev: 1, timeline, mixer, sections: [section('bomb-1', [part('kick', 1, 's("sbd*4").decay(0.3)', 'kick'), part('bomb', 2, bomb, 'texture')])] };
   }
   const room = (await (await fetch('/fixtures/snapshot.json')).json()) as RoomSnapshot;

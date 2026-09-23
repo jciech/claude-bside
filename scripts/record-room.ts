@@ -69,6 +69,13 @@ try {
   await context.addInitScript(TAP);
   const page = await context.newPage();
   page.on('pageerror', (e) => console.error(`[page] ${e.message}`));
+  const seen = new Set<string>();
+  page.on('console', (m) => {
+    if (m.type() !== 'error' && m.type() !== 'warning') return;
+    const text = m.text();
+    if (!seen.has(text)) console.error(`[${m.type()}] ${text}`);
+    seen.add(text);
+  });
   await page.goto(values.url);
   await page.getByRole('button', { name: 'Drop the needle' }).click();
   await page.locator('.app[data-engine-state="running"]').waitFor({ timeout: 60_000 });
@@ -85,6 +92,11 @@ try {
     const now = `${title ?? '?'} (${by ?? '?'})`;
     if (now !== last) console.log(`${stamp()}  ${now}`);
     last = now;
+    // Parts the engine muted (density, query errors…) show in the code view.
+    for (const error of await page.locator('.status.err').allTextContents().catch(() => [])) {
+      if (!seen.has(error)) console.log(`${stamp()}  [part] ${error.trim()}`);
+      seen.add(error);
+    }
     await page.waitForTimeout(1000);
   }
 
