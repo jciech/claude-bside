@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { instanceKnobsAt } from '../../src/client/engine/envelope.ts';
 import { buildScore, effectiveTransition } from '../../src/client/engine/score.ts';
+import { EMPTY_MIXER } from '../../src/shared/program.ts';
 import { cutAfter, cutForRun, inWindowAt, isDiscontinuity, lastExitBefore, runs } from '../../src/client/engine/window.ts';
 import { part, section, sectionA, sectionB } from './fixtures.ts';
 
@@ -17,9 +19,9 @@ describe('instances from the fixture', () => {
     expect(inst('fx01-0002:lead').fadeIn).toEqual({ at: 16, bars: 2 });
   });
 
-  it('carries knob values from the end of the previous section', () => {
-    expect(inst('fx01-0002:bass').inherited).toEqual({ cut: 1200 });
-    expect(inst('fx01-0001:bass').inherited).toBeNull();
+  it('plays a carried part from its knob default (the value the conductor carried over), with or without the section before', () => {
+    const alone = buildScore([sectionB], new Map()).byKey.get('fx01-0002:bass')!;
+    for (const bass of [inst('fx01-0002:bass'), alone]) expect(instanceKnobsAt(bass, 20, EMPTY_MIXER)).toEqual({ cut: 1200 });
   });
 
   it('skips a transition window that began before the section arrived', () => {

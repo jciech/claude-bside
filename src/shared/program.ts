@@ -30,7 +30,11 @@ export interface ProgramPart {
   /** Score bars. enterBar < 0 is a pickup over the previous section's end. */
   enterBar: number;
   exitBar: number | null;
-  /** Complete knob declarations (inherited ones included). */
+  /**
+   * Complete knob declarations (inherited ones included). For a carried part the conductor sets each
+   * inherited knob's `default` to the value the previous section's same-id part ended on, so knob
+   * values never depend on sections a client no longer holds.
+   */
   knobs: Knob[];
   automation: Automation[];
   /** Resolved sidechain: engine sets duckorbit/duckdepth/duckattack on this part's haps. */

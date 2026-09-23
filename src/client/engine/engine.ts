@@ -103,7 +103,8 @@ class PerformerEngine implements Engine {
   private channels: ChannelBank | null = null;
   private master: MasterChain | null = null;
   private riser: RiserVoice | null = null;
-  private unlocking: Promise<void> | null = null;
+  /** The unlock in progress; suspend() or an interruption abandons it (see cancelStart). */
+  private unlocking: { done: Promise<void> } | null = null;
   private pendingStart: { deadline: number; resolve: () => void } | null = null;
   /** Our own suspend() in progress: the context's state change is not an interruption. */
   private suspending: unknown = null;
@@ -182,13 +183,21 @@ class PerformerEngine implements Engine {
       this.suspending = null;
     }
     if (this.state === 'running' && this.scheduler?.running && audioContext().state === 'running') return Promise.resolve();
-    this.unlocking ??= (async () => {
+    if (this.unlocking) return this.unlocking.done;
+    const attempt = { done: Promise.resolve() };
+    this.unlocking = attempt;
+    attempt.done = (async () => {
       this.setState('unlocking');
       try {
         await resumed;
         await this.options.clock.ready;
         await this.prepare();
         this.ensureAudio();
+        if (this.unlocking !== attempt) return;
+        if (audioContext().state !== 'running') {
+          this.interrupted();
+          return;
+        }
         await new Promise<void>((resolve) => {
           this.pendingStart = { deadline: this.now() + MAX_WAIT_BARS, resolve };
         });
@@ -196,15 +205,18 @@ class PerformerEngine implements Engine {
         this.setState('error');
         throw e;
       } finally {
-        this.unlocking = null;
+        if (this.unlocking === attempt) this.unlocking = null;
       }
     })();
-    return this.unlocking;
+    return attempt.done;
   }
 
   suspend(): void {
-    if (!this.master || !this.scheduler) return;
-    this.pendingStart = null;
+    this.cancelStart();
+    if (!this.master || !this.scheduler) {
+      if (this.state === 'unlocking') this.setState('suspended');
+      return;
+    }
     this.master.fadeOut(0.15);
     this.scheduler.stop();
     this.riser?.stopAll();
@@ -232,6 +244,10 @@ class PerformerEngine implements Engine {
     this.mixer = snapshot.mixer;
     this.sectionsById.clear();
     for (const s of snapshot.sections) this.sectionsById.set(s.id, s);
+    // The server only sends from the section before the current one: older ones we hold are history
+    // it pruned, not a change. They go when forgetOldSections says so.
+    const first = snapshot.sections.length ? Math.min(...snapshot.sections.map((s) => s.startCycle)) : Number.NEGATIVE_INFINITY;
+    if (!newEpoch) for (const [id, s] of before) if (s.startCycle < first) this.sectionsById.set(id, s);
     this.noteArrivals(snapshot.sections);
     if (newEpoch || !oldTimeline) {
       this.replaceScore();
@@ -349,6 +365,7 @@ class PerformerEngine implements Engine {
   setLocalMute(partId: string, muted: boolean): void {
     if (muted) this.localMutes.add(partId);
     else this.localMutes.delete(partId);
+    this.channels?.setMuted(this.localMutes);
   }
 
   telemetry(): Telemetry {
@@ -506,6 +523,7 @@ class PerformerEngine implements Engine {
     const t1 = t0 + 1 / cpsAtCycle(this.timeline, this.now());
     const resume = cycleAtMs(next, this.scheduler.serverMsAtAudioTime(t1));
     this.channels.retire(t0, t1, resume);
+    this.master?.retire(resume);
     this.scheduler.start(resume);
   }
 
@@ -520,6 +538,7 @@ class PerformerEngine implements Engine {
     controller.output.destinationGain.connect(this.master.input);
     controller.getOrbit(WARM_ORBIT, [0, 1]).output.disconnect();
     this.channels = new ChannelBank(ac, this.master.input);
+    this.channels.setMuted(this.localMutes);
     this.riser = new RiserVoice(ac, this.master.input);
     this.scheduler = new SyncedScheduler({
       audio: {
@@ -551,21 +570,33 @@ class PerformerEngine implements Engine {
 
   private onAudioState(state: AudioContextState | 'interrupted'): void {
     if (state === 'running' || this.suspending !== null) return;
-    if (this.state === 'running' || this.state === 'unlocking') {
-      // Context time froze: haps already handed over would play late on resume.
-      this.master?.silence();
-      this.riser?.stopAll();
-      this.scheduler?.stop();
-      this.pendingStart = null;
-      this.setState('suspended');
-      this.emit('needsGesture');
-    }
+    if (this.state === 'running' || this.state === 'unlocking') this.interrupted();
+  }
+
+  /** The context stopped under us (OS interruption): stop output and ask for a gesture. */
+  private interrupted(): void {
+    // Context time froze: haps already handed over would play late on resume.
+    this.master?.silence();
+    this.riser?.stopAll();
+    this.scheduler?.stop();
+    this.cancelStart();
+    this.setState('suspended');
+    this.emit('needsGesture');
+  }
+
+  /** Abandons an unlock in progress: its promise settles and the next unlock() starts a new attempt. */
+  private cancelStart(): void {
+    const pending = this.pendingStart;
+    this.pendingStart = null;
+    this.unlocking = null;
+    pending?.resolve();
   }
 
   private output(hap: PlannedHap, at: number, durationSec: number, cps: number): void {
     this.ensureOrbits(hap.inst.part);
     const inst = hap.inst;
-    superdough(hap.value, at, durationSec, cps, hap.onset).catch((e: unknown) => {
+    // superdough rewrites its argument (`s` gets the bank prefix, `duration` is added).
+    superdough({ ...hap.value }, at, durationSec, cps, hap.onset).catch((e: unknown) => {
       const message = String((e as Error)?.message ?? e);
       this.performer.reportOnce(inst, /not found|not loaded|is it loaded/i.test(message) ? 'sound-missing' : 'query', `superdough: ${message}`);
     });
@@ -660,7 +691,6 @@ class PerformerEngine implements Engine {
         this.channels.plan(nowCycle, horizon, ctx);
         this.master.plan(nowCycle, horizon, this.mixer, ctx.audioTimeAt);
         this.planRisers(nowCycle, horizon);
-        this.channels.applyMutes(this.scoreAt(now), now, this.localMutes);
         const handed = scheduler.lastEnd ?? now;
         while (this.scores.length > 1 && handed >= this.scores[1]!.from && nowCycle >= this.scores[1]!.from) {
           this.scores.shift();

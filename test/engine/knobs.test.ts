@@ -44,16 +44,17 @@ describe('knobAt', () => {
   const part = { automation: [lane(8, 16, 400, 1200, 'exp', 'knob:cut')] };
 
   it('adds up to half the range at a full macro and clamps', () => {
-    expect(knobAt(part, knob, 0, undefined, { brightness: 0, intensity: 0 })).toBe(800);
-    expect(knobAt(part, knob, 0, undefined, { brightness: 0.5, intensity: 0 })).toBeCloseTo(800 + 0.5 * 1050);
-    expect(knobAt(part, knob, 0, undefined, { brightness: 1, intensity: 0 })).toBe(1850);
-    expect(knobAt(part, knob, 16, undefined, { brightness: 1, intensity: 0 })).toBe(2250);
-    expect(knobAt(part, knob, 16, undefined, { brightness: -1, intensity: 0 })).toBe(300);
-    expect(knobAt(part, { ...knob, follows: '-intensity' }, 0, undefined, { brightness: 1, intensity: 0.2 })).toBeCloseTo(800 - 0.2 * 1050);
+    expect(knobAt(part, knob, 0, { brightness: 0, intensity: 0 })).toBe(800);
+    expect(knobAt(part, knob, 0, { brightness: 0.5, intensity: 0 })).toBeCloseTo(800 + 0.5 * 1050);
+    expect(knobAt(part, knob, 0, { brightness: 1, intensity: 0 })).toBe(1850);
+    expect(knobAt(part, knob, 16, { brightness: 1, intensity: 0 })).toBe(2250);
+    expect(knobAt(part, knob, 16, { brightness: -1, intensity: 0 })).toBe(300);
+    expect(knobAt(part, { ...knob, follows: '-intensity' }, 0, { brightness: 1, intensity: 0.2 })).toBeCloseTo(800 - 0.2 * 1050);
   });
 
-  it('carried parts start from the inherited value instead of the default', () => {
-    expect(knobAt({ automation: [] }, knob, 3, 1200, { brightness: 0, intensity: 0 })).toBe(1200);
+  it('holds the default where no lane covers the bar (for carried parts, the value the predecessor ended on)', () => {
+    expect(knobAt({ automation: [] }, { ...knob, default: 1200 }, 3, { brightness: 0, intensity: 0 })).toBe(1200);
+    expect(knobAt(part, { ...knob, default: 1200 }, 4, { brightness: 0, intensity: 0 })).toBe(1200);
   });
 });
 

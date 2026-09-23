@@ -1,7 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { affectedFrom, sectionAt, timelineDiffFrom } from '../../src/client/engine/score.ts';
+import { instanceKnobsAt } from '../../src/client/engine/envelope.ts';
+import { affectedFrom, buildScore, sectionAt, timelineDiffFrom } from '../../src/client/engine/score.ts';
+import { withCarriedKnobs } from '../../src/server/conductor/compile.ts';
+import { EMPTY_MIXER, type SectionProgram } from '../../src/shared/program.ts';
 import { createTimeline, pruneTimeline, withTempoAt, withTempoRamp } from '../../src/shared/timeline.ts';
-import { sectionA, sectionB } from './fixtures.ts';
+import { part, section, sectionA, sectionB } from './fixtures.ts';
+
+describe('carried knob values', () => {
+  // s0 opens the pad's cut 400 → 4000; s1 and s2 carry it without lanes (as the conductor compiles them).
+  const cut = { name: 'cut', default: 400, min: 300, max: 4000, follows: 'none' as const };
+  const pad = (over: Parameters<typeof part>[0]) => part({ role: 'pad', code: 'note("c3").s("sine").lpf(knob("cut"))', orbit: 1, knobs: [cut], ...over });
+  const s0 = section({ id: 's0', startCycle: 0, parts: [pad({ id: 'pad', automation: [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 400, to: 4000, curve: 'linear' }] })] });
+  const carried = (prev: SectionProgram, id: string, bars: 16 | 32) =>
+    withCarriedKnobs(section({ id, startCycle: prev.startCycle + prev.bars, bars, parts: [pad({ id: 'pad', carried: true, continues: true })] }), prev);
+  const s1 = carried(s0, 's1', 16);
+  const s2 = carried(s1, 's2', 32);
+  const cutAt = (sections: SectionProgram[], cycle: number) => instanceKnobsAt(buildScore(sections, new Map()).byKey.get('s2:pad')!, cycle, EMPTY_MIXER);
+
+  it('are the same whatever history a client holds (a late joiner, or after old sections are forgotten)', () => {
+    expect(cutAt([s0, s1, s2], 52)).toEqual({ cut: 4000 });
+    expect(cutAt([s1, s2], 52)).toEqual({ cut: 4000 });
+    expect(cutAt([s2], 52)).toEqual({ cut: 4000 });
+  });
+});
 
 describe('affectedFrom (what a schedule change touches)', () => {
   it('counts a new or revoked section from its influence cycle (pre-roll included)', () => {

@@ -58,7 +58,7 @@ import {
   type DramaturgyEntry,
 } from './accept.ts';
 import { ARC_AMPLITUDE, bendBaseline, isAmbient, isPeakSpan, peakThreshold, type Arc, type Baseline, type BudgetSpan } from './arc.ts';
-import { balanceTrims, carryPlan, checkInputFor, compileSection, continuingPatternBars, resolveSection, type ResolvedPart } from './compile.ts';
+import { balanceTrims, carryPlan, checkInputFor, compileSection, continuingPatternBars, resolveSection, withCarriedKnobs, type ResolvedPart } from './compile.ts';
 import { buildTurnContext, planBarBounds, type MovementState } from './context.ts';
 import { decideKeep } from './keep.ts';
 import { createLedger, LEDGER_WINDOW_MS } from './ledger.ts';
@@ -1383,7 +1383,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
     for (const s of [...sections]) if (s.startCycle <= bar && !started.has(s.id) && sections.includes(s)) startSection(s);
   }
 
-  /** Moves every section after `s` by `shift` bars; continuing parts re-derive where they pick up. */
+  /** Moves every section after `s` by `shift` bars; continuing parts re-derive where they pick up, carried knobs where they start. */
   function shiftAfter(s: SectionProgram, shift: number): SectionProgram[] {
     const idx = sections.indexOf(s);
     const moved: SectionProgram[] = [];
@@ -1395,7 +1395,7 @@ export function createConductor(deps: ConductorDeps): Conductor {
         const before = p.continues ? prev.parts.find((q) => q.id === p.id) : undefined;
         return { ...p, originCycle: before ? start - patternBarAt(prev, before, start) : p.originCycle + shift };
       });
-      const y = { ...x, startCycle: start, rev: x.rev + 1, parts };
+      const y = withCarriedKnobs({ ...x, startCycle: start, rev: x.rev + 1, parts }, prev);
       sections[i] = y;
       moved.push(y);
       prev = y;

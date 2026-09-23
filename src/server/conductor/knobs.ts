@@ -1,8 +1,8 @@
 // Automation lanes evaluated on the server the same way the performer does (docs/ARCHITECTURE §6):
-// before a lane a value holds the previous lane's end or its base (level, the knob default, or for
-// carried parts the knob's value at the end of the previous section); `exp` is geometric; after the
-// last lane the value holds. Used for the composer's context (knob values at a section's end) and to
-// know whether a section's held state is silent.
+// before a lane a value holds the previous lane's end or its base (level, or the knob default, which
+// for carried parts compile.ts sets to the knob's value at the end of the previous section); `exp` is
+// geometric; after the last lane the value holds. Used for carried knob values, the composer's
+// context (knob values at a section's end) and to know whether a section's held state is silent.
 import { laneValue, lanesFor } from '../../shared/automation.ts';
 import type { Automation, Knob } from '../../shared/plan.ts';
 

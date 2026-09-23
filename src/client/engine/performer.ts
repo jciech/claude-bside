@@ -240,7 +240,7 @@ export class Performer {
     const query = inst.part.originCycle + t;
     const play = query + binding.shift;
     const bar = inst.continuing ? scoreBarAt(s, play - s.startCycle) : query - s.startCycle;
-    return knobAt(inst.part, knob, bar, inst.inherited?.[knob.name], macrosAt(this.deps.mixer(), play));
+    return knobAt(inst.part, knob, bar, macrosAt(this.deps.mixer(), play));
   }
 
   private query(inst: InstanceSpec, compiled: Compiled, from: number, to: number, opts: PlanOptions): PlannedHap[] {

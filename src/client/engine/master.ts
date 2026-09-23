@@ -109,6 +109,11 @@ export class MasterChain {
     this.nextGrid = null;
   }
 
+  /** Epoch change: planning carries on from `resumeCycle` on the new timeline (see ChannelBank.retire). */
+  retire(resumeCycle: number): void {
+    this.nextGrid = Math.floor(resumeCycle / GRID_BARS + 1) * GRID_BARS;
+  }
+
   /** Tilt and safety trim from the mixer, planned on the channel grid. */
   plan(nowCycle: number, untilCycle: number, mixer: MixerState, audioTimeAt: (cycle: number) => number): void {
     const values = (c: number) => {

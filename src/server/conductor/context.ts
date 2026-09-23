@@ -77,31 +77,23 @@ const emptyDigest = (p: ProgramPart): PartDigest => ({
   keyFit: null,
 });
 
-/** Section summaries in schedule order; knob values chain through carried parts. */
+/** Section summaries in schedule order. Carried parts' knob defaults already hold their starting values. */
 export function summarizeSections(sections: readonly SectionProgram[]): Map<string, SectionSummary> {
   const out = new Map<string, SectionSummary>();
-  const endValues = new Map<string, Record<string, Record<string, number>>>();
-  let prev: SectionProgram | null = null;
   for (const s of sections) {
-    const values: Record<string, Record<string, number>> = {};
     const ids = new Map(s.parts.map((p) => [p.orbit, p.id]));
-    const parts = s.parts.map((p) => {
-      const inherited = p.carried && prev ? (endValues.get(prev.id)?.[p.id] ?? null) : null;
-      values[p.id] = knobValuesAt(p, s.bars, inherited);
-      return {
-        ...(p.digest ?? emptyDigest(p)),
-        code: p.code,
-        level: p.level,
-        enterBar: p.enterBar,
-        exitBar: p.exitBar,
-        knobs: p.knobs,
-        knobValuesAtEnd: values[p.id]!,
-        duck: p.duck ? { targets: p.duck.orbits.map((o) => ids.get(o)).filter((x): x is string => !!x), depth: p.duck.depth, releaseSec: p.duck.releaseSec } : null,
-        chromatic: p.chromatic,
-        patternBarAtEnd: patternBarAt(s, p, plannedEnd(s)),
-      };
-    });
-    endValues.set(s.id, values);
+    const parts = s.parts.map((p) => ({
+      ...(p.digest ?? emptyDigest(p)),
+      code: p.code,
+      level: p.level,
+      enterBar: p.enterBar,
+      exitBar: p.exitBar,
+      knobs: p.knobs,
+      knobValuesAtEnd: knobValuesAt(p, s.bars, null),
+      duck: p.duck ? { targets: p.duck.orbits.map((o) => ids.get(o)).filter((x): x is string => !!x), depth: p.duck.depth, releaseSec: p.duck.releaseSec } : null,
+      chromatic: p.chromatic,
+      patternBarAtEnd: patternBarAt(s, p, plannedEnd(s)),
+    }));
     out.set(s.id, {
       id: s.id,
       name: s.name,
@@ -116,7 +108,6 @@ export function summarizeSections(sections: readonly SectionProgram[]): Map<stri
       measured: s.measured,
       parts,
     });
-    prev = s;
   }
   return out;
 }

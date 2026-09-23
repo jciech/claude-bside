@@ -13,6 +13,7 @@ import {
   continuingPatternBars,
   resolveSection,
   vampAllowed,
+  withCarriedKnobs,
 } from '../../src/server/conductor/compile.ts';
 import { knobValuesAt, laneValue, levelAt } from '../../src/server/conductor/knobs.ts';
 import { createFakeChecker, createRoom, part, plan, section } from './harness.ts';
@@ -157,7 +158,8 @@ describe('compileSection', () => {
     const program = compileSection({ id: 'x-0002', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 16, plan, parts, provisional: true, prev: first, check });
     const byId = Object.fromEntries(program.parts.map((p) => [p.id, p]));
     expect(byId.kick).toMatchObject({ orbit: 1, originCycle: 0, continues: true, carried: true, duck: { orbits: [3], depth: 0.5, releaseSec: 0.2 } });
-    expect(byId.bass).toMatchObject({ orbit: 3, originCycle: 0, continues: true, knobs: first.parts[2]!.knobs });
+    // Its cut lane ended at 1200 at bar 16: the carried knob starts there.
+    expect(byId.bass).toMatchObject({ orbit: 3, originCycle: 0, continues: true, knobs: [{ ...first.parts[2]!.knobs[0]!, default: 1200 }] });
     expect(byId.hats).toMatchObject({ orbit: 5, originCycle: 16, continues: false, carried: false });
     expect(byId.lead).toMatchObject({ orbit: 6, originCycle: 16 });
     expect(program).toMatchObject({ provisional: true, vamp: { allowed: true, loopBars: 8 }, jumps: [], rev: 1, measured: check.mix!.spans });
@@ -170,6 +172,8 @@ describe('compileSection', () => {
     const check = await checkOf(checkInputFor(plan, parts, continuingPatternBars(parts, first, 20)));
     const program = compileSection({ id: 'x', index: 2, track: 2, movementId: 'm', author: 'claude', startCycle: 20, plan, parts, provisional: false, prev: first, check });
     expect(program.parts[0]!.originCycle).toBe(8);
+    // ...and its knobs start where the vamp left the lane: bar 12 of 400 → 1200 exp over bars 8–16.
+    expect(program.parts[0]!.knobs[0]!.default).toBeCloseTo(Math.sqrt(400 * 1200));
   });
 
   it('vamp is off for build/intro/outro/transition and when the held state is silent', () => {
@@ -201,6 +205,37 @@ describe('compileSection', () => {
     const s = p.sections[0]!;
     expect(s.parts.every((x) => x.code === null && !x.restart && x.enterBar === 0)).toBe(true);
     expect(s).toMatchObject({ bpm: 120, scale: 'D:dorian', transitionIn: { type: 'cut', bars: 0 } });
+  });
+});
+
+describe('carried knob values (the program holds them, not client history)', () => {
+  const pad = (over: Partial<SectionProgram['parts'][number]>) => ({ ...first.parts[2]!, id: 'pad', role: 'pad' as const, ...over });
+  const cut = { name: 'cut', default: 400, min: 300, max: 4000, follows: 'none' as const };
+  const s0 = { ...first, id: 's0', startCycle: 0, bars: 16 as const, parts: [pad({ knobs: [cut], automation: [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 400, to: 4000, curve: 'linear' }] })] };
+  const carriedFrom = (prev: SectionProgram, id: string, bars: 16 | 32, over: Partial<SectionProgram['parts'][number]> = {}) =>
+    withCarriedKnobs({ ...first, id, startCycle: prev.startCycle + prev.bars, bars, parts: [pad({ knobs: [cut], automation: [], carried: true, continues: true, ...over })] }, prev);
+
+  it('chain through carried sections, so each one is self-contained', () => {
+    const s1 = carriedFrom(s0, 's1', 16);
+    const s2 = carriedFrom(s1, 's2', 32);
+    expect(s1.parts[0]!.knobs[0]!.default).toBe(4000);
+    expect(s2.parts[0]!.knobs[0]!.default).toBe(4000);
+    expect(withCarriedKnobs(s2, s1)).toBe(s2);
+  });
+
+  it('are clamped to the carried declaration and leave rewritten parts and new knobs alone', () => {
+    const narrow = carriedFrom(s0, 's1', 16, { knobs: [{ ...cut, max: 2000 }, { name: 'q', default: 3, min: 0, max: 9, follows: 'none' }] });
+    expect(narrow.parts[0]!.knobs.map((k) => k.default)).toEqual([2000, 3]);
+    const rewritten = carriedFrom(s0, 's1', 16, { carried: false, continues: false });
+    expect(rewritten.parts[0]!.knobs[0]!.default).toBe(400);
+  });
+
+  it('follow the predecessor when a Stay or a late start changes where it ends', () => {
+    const s1 = carriedFrom(s0, 's1', 16);
+    // s0 vamped 4 bars (loop 8): it ended at score bar 12 of its 400 → 4000 lane.
+    expect(withCarriedKnobs({ ...s1, startCycle: 20 }, s0).parts[0]!.knobs[0]!.default).toBe(3100);
+    // A Stay repeats bars 8–16 but still ends the score at bar 16.
+    expect(withCarriedKnobs({ ...s1, startCycle: 24 }, { ...s0, jumps: [{ atBar: 16, toBar: 8 }] }).parts[0]!.knobs[0]!.default).toBe(4000);
   });
 });
 

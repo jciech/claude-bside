@@ -6,7 +6,9 @@
 //   Orbit.output → low-pass → high-pass → gain (level/automation/transitions/macros/trims)
 //                → mute (listener's personal mix) → master bus   (+ an analyser tap for meters)
 // Gains and filters are sampled from pure functions of cycle on a 1/8-bar grid and scheduled as
-// AudioParam ramps at each point's audio time, so every client plays identical curves.
+// AudioParam ramps at each point's audio time, so every client plays identical curves. The personal
+// mix is planned on the same audio timeline: a channel mutes or unmutes exactly where an instance of
+// a muted part takes it over, since its first note is handed to superdough well before it sounds.
 import { getSuperdoughAudioController } from 'superdough';
 import type { MixerState } from '../../shared/program.ts';
 import { channelFiltersAt, channelGainAt, filterOwner, OPEN_HIGHPASS_HZ, OPEN_LOWPASS_HZ } from './envelope.ts';
@@ -77,6 +79,7 @@ export interface Channel {
   gainPlan: ParamPlanner;
   lowpassPlan: ParamPlanner;
   highpassPlan: ParamPlanner;
+  /** Mute state after the last planned mute change. */
   muted: boolean;
 }
 
@@ -95,6 +98,10 @@ export class ChannelBank {
   private nextGrid: number | null = null;
   /** A schedule change: curves from this cycle on are re-planned at the next plan(). */
   private replanAt: number | null = null;
+  /** Part ids the listener muted. */
+  private mutedParts: ReadonlySet<string> = new Set();
+  /** Next grid cycle whose mute state to plan, or null to apply the mix at "now" and plan on from there. */
+  private nextMuteGrid: number | null = null;
   private readonly meterBuffer = new Float32Array(1024);
 
   constructor(ac: AudioContext, destination: AudioNode) {
@@ -129,17 +136,26 @@ export class ChannelBank {
     this.channels.set(orbit, channel);
     // Planned curves exist only for the channels that existed; start everyone from the current values.
     this.nextGrid = null;
+    this.nextMuteGrid = null;
     return channel;
   }
 
   /** Forget planned curves; the next plan() restarts from the audio clock. */
   restart(): void {
     this.nextGrid = null;
+    this.nextMuteGrid = null;
   }
 
   /** Re-plans from `cycle` on (a schedule change); curves before it stay as scheduled. */
   replanFrom(cycle: number): void {
     this.replanAt = this.replanAt === null ? cycle : Math.min(this.replanAt, cycle);
+    this.nextMuteGrid = null;
+  }
+
+  /** The listener's personal mix: channels mute while an instance of one of these part ids owns them. */
+  setMuted(partIds: ReadonlySet<string>): void {
+    this.mutedParts = new Set(partIds);
+    this.nextMuteGrid = null;
   }
 
   /** Schedules channel curves on the grid up to `untilCycle`. */
@@ -161,8 +177,11 @@ export class ChannelBank {
       this.replanAt = null;
     } else if (this.replanAt !== null) {
       const at = Math.max(this.replanAt, nowCycle);
-      reset(at);
-      this.nextGrid = Math.floor(at / GRID_BARS + 1) * GRID_BARS;
+      // Only points already planned at or after `at` are replaced; the grid reaches the rest.
+      if (at < this.nextGrid - GRID_BARS + EPS) {
+        reset(at);
+        this.nextGrid = Math.floor(at / GRID_BARS + 1) * GRID_BARS;
+      }
       this.replanAt = null;
     }
     for (let g = this.nextGrid; g <= untilCycle + EPS; g += GRID_BARS) {
@@ -178,6 +197,39 @@ export class ChannelBank {
         ch.highpassPlan.point(t, f.highpass);
       }
     }
+    this.planMutes(nowCycle, untilCycle, ctx);
+  }
+
+  private planMutes(nowCycle: number, untilCycle: number, ctx: PlanContext): void {
+    if (this.nextMuteGrid === null) {
+      const t = this.ac.currentTime;
+      const score = ctx.scoreAt(nowCycle);
+      for (const ch of this.channels.values()) {
+        ch.muted = this.mutedAt(score, ch.orbit, nowCycle);
+        ch.mute.gain.cancelScheduledValues(t);
+        ch.mute.gain.setTargetAtTime(ch.muted ? 0 : 1, t, MUTE_TIME_CONSTANT);
+      }
+      this.nextMuteGrid = Math.floor(nowCycle / GRID_BARS + 1) * GRID_BARS;
+    }
+    for (let g = this.nextMuteGrid; g <= untilCycle + EPS; g += GRID_BARS) {
+      const t = ctx.audioTimeAt(g);
+      this.nextMuteGrid = g + GRID_BARS;
+      if (t <= this.ac.currentTime) continue;
+      const score = ctx.scoreAt(g);
+      for (const ch of this.channels.values()) {
+        const m = this.mutedAt(score, ch.orbit, g);
+        if (m === ch.muted) continue;
+        // Consecutive sections never share an orbit between different instances, so whatever owned
+        // the channel before has long gone quiet: the step is silent.
+        ch.mute.gain.setValueAtTime(m ? 0 : 1, t);
+        ch.muted = m;
+      }
+    }
+  }
+
+  private mutedAt(score: Score, orbit: number, cycle: number): boolean {
+    const owner = filterOwner(score.byOrbit.get(orbit) ?? [], cycle);
+    return !!owner && this.mutedParts.has(owner.part.id);
   }
 
   /** Fades every channel out over [t0, t1] (epoch change); planning resumes at t1. */
@@ -187,18 +239,8 @@ export class ChannelBank {
       ch.gainPlan.point(t1, 0);
     }
     this.nextGrid = Math.floor(resumeCycle / GRID_BARS + 1) * GRID_BARS;
+    this.nextMuteGrid = this.nextGrid;
     this.replanAt = null;
-  }
-
-  /** Applies the listener's personal mix to whichever instance owns each channel now. */
-  applyMutes(score: Score, cycle: number, muted: ReadonlySet<string>): void {
-    for (const ch of this.channels.values()) {
-      const owner = filterOwner(score.byOrbit.get(ch.orbit) ?? [], cycle);
-      const m = !!owner && muted.has(owner.part.id);
-      if (m === ch.muted) continue;
-      ch.muted = m;
-      ch.mute.gain.setTargetAtTime(m ? 0 : 1, this.ac.currentTime, MUTE_TIME_CONSTANT);
-    }
   }
 
   /** RMS (linear) of each channel's output right now. */

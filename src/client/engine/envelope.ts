@@ -28,7 +28,7 @@ export function instanceKnobsAt(inst: InstanceSpec, c: number, mixer: MixerState
   const bar = scoreBarOf(inst, c);
   const macros = macrosAt(mixer, c);
   const out: Record<string, number> = {};
-  for (const knob of inst.part.knobs) out[knob.name] = knobAt(inst.part, knob, bar, inst.inherited?.[knob.name], macros);
+  for (const knob of inst.part.knobs) out[knob.name] = knobAt(inst.part, knob, bar, macros);
   return out;
 }
 
