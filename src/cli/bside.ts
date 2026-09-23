@@ -18,8 +18,11 @@ export interface Io {
   fetch?: typeof fetch;
   /** Colour when the terminal supports it. */
   tty: boolean;
-  /** Ends `watch` (Ctrl-C in the real CLI). */
-  signal?: AbortSignal;
+  /**
+   * A signal that aborts on Ctrl-C, so `watch` can end cleanly. Only `watch` asks for it: every other
+   * command keeps the default, where Ctrl-C stops the process at once.
+   */
+  interruptSignal?(): AbortSignal;
 }
 
 const DEFAULT_URL = 'http://localhost:3000';
@@ -158,7 +161,7 @@ async function run(args: Args, io: Io, st: Style): Promise<number> {
       return 0;
     }
     case 'watch': {
-      const signal = io.signal ?? new AbortController().signal;
+      const signal = io.interruptSignal?.() ?? new AbortController().signal;
       await api.events(signal, (event, data) => io.out(json ? JSON.stringify({ event, data }) : formatEvent(event, data, st)));
       return 0;
     }
@@ -205,8 +208,6 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const stop = new AbortController();
-  process.once('SIGINT', () => stop.abort());
   process.exitCode = await main(process.argv.slice(2), {
     env: process.env,
     out: (text) => process.stdout.write(`${text}\n`),
@@ -214,6 +215,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     readFile: (path) => readFile(path, 'utf8'),
     readStdin: () => readAll(process.stdin),
     tty: process.stdout.isTTY === true,
-    signal: stop.signal,
+    interruptSignal: () => {
+      const stop = new AbortController();
+      process.once('SIGINT', () => stop.abort());
+      return stop.signal;
+    },
   });
 }
