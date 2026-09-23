@@ -175,6 +175,19 @@ export function capByNetwork<K>(weights: Map<K, number>, networkOf: (key: K) => 
   return out;
 }
 
+/** The network holding more than half of the summed weight, if one does (at most one can). */
+export function majorityNetwork<K>(weights: Map<K, number>, networkOf: (key: K) => string): string | null {
+  const totals = new Map<string, number>();
+  let sum = 0;
+  for (const [key, w] of weights) {
+    totals.set(networkOf(key), (totals.get(networkOf(key)) ?? 0) + w);
+    sum += w;
+  }
+  // Capped totals carry rounding error: an exact tie (a capped network against two full listeners) is no majority.
+  for (const [network, total] of totals) if (total - (sum - total) > 1e-9 * Math.max(1, sum)) return network;
+  return null;
+}
+
 export function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length >> 1;

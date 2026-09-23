@@ -21,6 +21,7 @@ import {
 import { clientAddress } from '../http/security.ts';
 import type { Broadcaster, Conductor, Crowd, EventArgs, JoinResult, Logger, RoomClock, ServerConfig, SnapshotBase } from '../types.ts';
 import { createBucket, KeyedBuckets, take, type Rate } from './buckets.ts';
+import { serverNow } from './clock.ts';
 import { networkKey } from './identity.ts';
 
 interface SocketData {
@@ -43,7 +44,7 @@ const MAX_SOCKETS = 20_000;
  * refused clients retrying. Connections that never join the namespace count too.
  */
 const ENGINE_SLACK = 8;
-/** New connections per network. */
+/** New engine.io connections per network, whether or not they go on to join the namespace. */
 const CONNECT_RATE: Rate = { perSec: 1, burst: 30 };
 /** Hellos per socket: the first and a few resyncs (each builds a whole welcome). */
 const HELLO_RATE: Rate = { perSec: 0.2, burst: 3 };
@@ -82,11 +83,13 @@ const networkOf = (req: IncomingMessage, config: ServerConfig) =>
 /**
  * The socket.io server for the room: websocket only, small messages, no client bundle, and no
  * cross-site sockets (a foreign page must not be able to enrol its visitors as listeners).
- * Engine.io connections are counted per network from the handshake on: the admission middleware in
- * attachRoom only sees clients that join the namespace, and a silent one is held until connectTimeout.
+ * Engine.io connections are counted and rate limited per network from the handshake on: the admission
+ * middleware in attachRoom only sees clients that join the namespace, and a silent one is held until
+ * connectTimeout.
  */
-export function createRoomServer(http: HttpServer, config: ServerConfig): RoomServer {
+export function createRoomServer(http: HttpServer, config: ServerConfig, now: () => number = serverNow): RoomServer {
   const held = new Map<string, number>();
+  const connectRates = new KeyedBuckets(CONNECT_RATE);
   let total = 0;
   const io: RoomServer = new Server(http, {
     transports: ['websocket'],
@@ -95,13 +98,16 @@ export function createRoomServer(http: HttpServer, config: ServerConfig): RoomSe
     pingInterval: 20_000,
     pingTimeout: 20_000,
     connectTimeout: 10_000,
-    allowRequest: (req, callback) =>
+    allowRequest: (req, callback) => {
+      const network = networkOf(req, config);
       callback(
         null,
         sameOrigin(req, config.trustProxy) &&
           total < MAX_SOCKETS + ENGINE_SLACK &&
-          (held.get(networkOf(req, config)) ?? 0) < config.maxSocketsPerNetwork + ENGINE_SLACK,
-      ),
+          (held.get(network) ?? 0) < config.maxSocketsPerNetwork + ENGINE_SLACK &&
+          connectRates.take(network, now()),
+      );
+    },
   });
   io.engine.on('connection', (conn: EngineSocket) => {
     const network = networkOf(conn.request, config);
@@ -148,7 +154,6 @@ export interface RoomDeps {
 export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
   const { crowd, conductor, clock, config, log } = deps;
   const perNetwork = new Map<string, number>();
-  const connectRates = new KeyedBuckets(CONNECT_RATE);
   let sockets = 0;
 
   // ─── The shared part of every welcome ─────────────────────────────────────────────────────────
@@ -197,13 +202,13 @@ export function attachRoom(io: RoomServer, deps: RoomDeps): () => void {
   }
 
   // ─── Admission: caps before any listener state exists ─────────────────────────────────────────
+  // (the per-network connect rate is taken at the engine.io handshake, in createRoomServer)
   io.use((socket, next) => {
     const refuse = (message: ConnectError) => next(new Error(message));
     const address = clientAddress({ remoteAddress: socket.request.socket.remoteAddress, headers: socket.handshake.headers }, config.trustProxy);
     const network = networkKey(address, config.ipv6Prefix);
     if (sockets >= MAX_SOCKETS) return refuse('server-full');
     if ((perNetwork.get(network) ?? 0) >= config.maxSocketsPerNetwork) return refuse('too-many-connections');
-    if (!connectRates.take(network, clock.now())) return refuse('rate-limited');
     socket.data = { address, network };
     sockets++;
     perNetwork.set(network, (perNetwork.get(network) ?? 0) + 1);

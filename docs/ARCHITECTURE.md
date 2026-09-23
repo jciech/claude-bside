@@ -296,8 +296,11 @@ The deadlines assume a cut: a pre-roll of n bars (riser, breath, filter, pickups
 bars earlier. After a section that must not vamp, a plan whose pre-roll no longer fits before that
 section ends is refused (`lead-time`, naming the pre-roll that still fits) rather than placed late.
 The deadlines follow the section the plan comes after: a Stay or Move on moves them with its end.
-A composer failure never moves them out: a retry keeps what was left of the failed request's slot,
-and when a retry could no longer compose in time (p90), the autopilot takes the slot at once.
+A deadline a Move on pulled in, leaving less than the usual (p90) compose time since the request,
+is the room's like a replan's: missing it doesn't count as a Claude failure (nor as a compose time),
+and Claude's next turn hears that the room moved on. A composer failure never moves them out: a
+retry keeps what was left of the failed request's slot, and when a retry could no longer compose in
+time (p90), the autopilot takes the slot at once.
 A plan written against an older `scheduleRev` is re-validated against the current schedule and only
 fails (`stale-context`) if a rule actually breaks.
 
@@ -366,9 +369,14 @@ without a valid token a listener starts fresh. `w = trust × presence`: trust ri
 minutes of audible listening; presence 1 (visible) / 0.5 (hidden tab, audio on) / 0 (not audible);
 inputs ignored for the first 10 s; heartbeats every 10 s, stale after 25 s. The total weight of one
 network (/24 for IPv4, /48 for IPv6, derived from the socket peer or `trustProxy` hops) is capped at
-2.0, and one network counts as at most 2 voices wherever Kish n_eff is compared with a quorum.
-Sockets per network and connection rates are capped too, counted from the engine.io handshake (a
-connection that never joins the namespace still counts). One socket is one listener: a repeated
+2.0, and one network counts as at most 2 voices wherever Kish n_eff is compared with a quorum —
+except a network holding more than half of the room's capped weight (an exact tie is no majority):
+that network *is* the room (a venue, an office, localhost, a household with one friend elsewhere),
+and its listeners count one by one, uncapped. A crowd of sockets on one network can only be that when
+everyone else together weighs less than 2, i.e. at most one listener elsewhere; beside two or more, it
+stays two voices, and so does a NAT'd crowd beside two or more listeners elsewhere (the price of the
+cap). Sockets per network and connection rates are capped too, counted from the engine.io handshake
+(a connection that never joins the namespace still counts). One socket is one listener: a repeated
 `hello` resyncs the same listener (at most 3 at once, then one per 5 s), and a listener's identity
 is kept 10 minutes after they leave, but at most 64 per network (the longest gone are forgotten
 first). Only identities with ≥ 10 s of audible listening are persisted.
@@ -394,39 +402,43 @@ caps, not slowness, are what resist trolls.
   0.15 per plan (κ = 0.15 + 0.35·confidence), clamped to [0.25, 0.7] unless the movement is ambient.
 
 **Early replan** on strong, sustained consensus: pressure vs baseline > 0.45 for 24 bars (hysteresis
-resets below 0.25), Kish n_eff ≥ min(3, N) (N present listeners, each network counting as at most 2,
-so a room behind one NAT can still reach it and a single network elsewhere can't), ≥ 32 bars since
-the last one. Half a room of 10–200 holding one direction from rest gets there after ≈ 65–80 s
-(120 BPM); the fast lane has long since answered, so structure only moves on a lean the room keeps.
-It replaces the provisional section, never the locked ones.
+resets below 0.25), Kish n_eff ≥ min(3, N) − ½ (N present listeners, each network but the room's
+counting as at most 2, so a room behind one NAT can still reach it and a single network elsewhere
+can't; the half voice of slack because Kish only reaches a head count when every voice weighs the
+same, and freshness decays from each listener's own gesture), ≥ 32 bars since the last one. Half a
+room of 10–200 holding one direction from rest gets there after ≈ 65–80 s (120 BPM); the fast lane
+has long since answered, so structure only moves on a lean the room keeps. It replaces the
+provisional section, never the locked ones.
 
 **Stay / Move on**: one ballot per listener (the latest wins); ballots carry the section they were
 heard in (refused otherwise), are cleared at every section start and consumed once the conductor
-acts on them. A ballot fades with freshness exp(−age/90 s) and stops counting below 0.05 (after ≈ 4.5
-min); ballots are aggregated with the same silent-majority prior and smoothed with τ = 10 s. |K| >
-0.35 held for 8 bars, with a quorum of Kish n_eff ≥ min(2, N) among the ballots (a solo listener can
-act alone), acts if the change can still be made before the relevant lock point; the signal repeats
-every bar while the lean holds. Stay: one repeated phrase (at most 2 per section; never for intro,
-build or transition). Move on: jump to the final phrase at the next 8-bar line (a build may be
-shortened), cancelling a Stay not yet reached; with no successor committed, it requests a plan with
-reason `move-on`. Both measure from where the section really ends: a successor committed with
-`--next`/`--now` may cut in before its planned end (Stay then repeats the phrase before the cut). `keepPending` in
-the crowd frame tells the dock what is happening ("moving on at bar 72", "this track ends in 6 bars
-anyway", "already held twice"); `blocked` is `min-length`, `next-not-ready`, `role`, `locked` (too
-close to a lock point) or `max` (already extended twice).
+acts on them. A ballot fades with freshness exp(−age/90 s) and stops counting below 0.05 (after ≈
+4.5 min); ballots are aggregated with the same silent-majority prior and smoothed with τ = 10 s.
+|K| > 0.35 held for 8 bars, with a quorum of Kish n_eff ≥ min(2, N) − ½ among the ballots (a solo
+listener can act alone; two listeners needn't press in the same instant), acts if the change can
+still be made before the relevant lock point; the signal repeats every bar while the lean holds.
+Stay: one repeated phrase (at most 2 per section; never for intro, build or transition). Move on:
+jump to the final phrase at the next 8-bar line (a build may be shortened), cancelling a Stay not
+yet reached; with no successor committed, it requests a plan with reason `move-on`. Both measure
+from where the section really ends: a successor committed with `--next`/`--now` may cut in before
+its planned end (Stay then repeats the phrase before the cut). `keepPending` in the crowd frame
+tells the dock what is happening ("moving on at bar 72", "this track ends in 6 bars anyway",
+"already held twice"); `blocked` is `min-length`, `next-not-ready`, `role`, `locked` (too close to a
+lock point) or `max` (already extended twice).
 
 **Reactions**: token buckets (`RATE_LIMITS` in `music.ts`), at most one counted per type per 4-bar
 window, attributed to the bar the listener heard (validated to lie within the last 8 bars). Rates
 per section (weighted reactions per minute over the room's present weight, which a crowd of sockets
-from one network can't dilute) become z-scores against a 15-minute baseline; within a section's
-rate one listener counts for at most one reaction per type per minute (max(1, minutes) in all), so
-a single enthusiast can't manufacture a loved moment or a trim. A z-signal also needs ≥ min(2, N)
-distinct reporters on ≥ min(2, networks present) networks. 🔥 z ≥ 2 marks a loved moment; 💤 z ≥ 2
-raises novelty pressure (once per section); 😣 z ≥ 2 (or reporters holding ≥ 20 % of the room's
-network-capped weight within 8 bars) applies a safety trim (−3 dB master, −3 dB high shelf, 16
-bars). A repeat trim needs new evidence: at least one Too much pressed since the last trim, and 16
-bars since it (the z test still counts the section's earlier presses; the 20 % test counts only new
-ones).
+from one network can't dilute) become z-scores against a 15-minute baseline; within a section's rate
+one listener counts for at most one reaction per type per minute (max(1, minutes) in all), so a
+single enthusiast can't manufacture a loved moment or a trim. A z-signal also needs ≥ min(2, N)
+distinct reporters on ≥ 2 networks, or on the room's own network. 🔥 z ≥ 2 marks a loved moment; 💤 z
+≥ 2 raises novelty pressure (once per section); 😣 z ≥ 2 (or reporters holding ≥ 20 % of the room
+within 8 bars, both by network-capped weight and without the cap — so neither sockets crowding in
+from one network nor one listener beside a crowd behind one network can reach it) applies a safety
+trim (−3 dB master, −3 dB high shelf, 16 bars). A repeat trim needs new evidence: at least one Too
+much pressed since the last trim, and 16 bars since it (the z test still counts the section's
+earlier presses; the 20 % test counts only new ones).
 
 **Requests**: sanitised (`sanitizeRequestText`), merged on a normalised key, support = Σ
 w·exp(−age/6 min); the top 5 undecided go into every turn context, plus every open promise
@@ -438,10 +450,11 @@ the same summary without marking it. Raw text is shown only to its author; every
 composer's paraphrase. Requests no composer was handed within 5 minutes get a system note. Rate: 1
 per minute per listener, 5 per minute per network, 30 per minute per room.
 
-**Telemetry**: at most 20 sampled clients (2 per network) send audio statistics and coded errors.
-An error names a section and a part by the ids the server issued (the schema admits nothing else)
-and is dropped on arrival unless those ids are in the live schedule; it is *corroborated* once
-trusted listeners (trust ≥ 0.6) on ≥ 2 networks report it, however small the room. At most 8
+**Telemetry**: at most 20 sampled clients (2 per network) send audio statistics and coded errors. An
+error names a section and a part by the ids the server issued (the schema admits nothing else) and
+is dropped on arrival unless those ids are in the live schedule; it is *corroborated* once trusted
+listeners (trust ≥ 0.6) on ≥ 2 networks report it, however small the room — or two on the room's own
+network (a venue or localhost room has at most two sampled clients, both on it). At most 8
 corroborated errors reach a turn context, filtered against the schedule again.
 
 **Forks**: at most one every ~3 minutes (`rules.forkAllowed`); binding if the winner has ≥ 50 % with
@@ -451,7 +464,8 @@ section will realise it and when it lands.
 These parameters are simulated in `test/room/crowd-sim.test.ts` (a troll pinning the pad for 5
 minutes in a room of 40 moves it by 0.09; 30 sockets from one subnet by 0.17; half the room flipping
 every 60 s causes zero replans, while half the room holding one way for a minute is consensus and
-replans once).
+replans once; a NAT group of 10 plus one outsider behaves like any room of eleven, whoever trolls;
+two listeners on one Wi-Fi can each trim but need each other to replan or move on).
 
 ## 9. Arc, dramaturgy and novelty
 
@@ -467,10 +481,12 @@ the composer chooses roles freely, and jazz or ambient forms are as valid as EDM
 the current budget state so nobody violates them blindly):
 - Peak: target intensity ≥ max(0.8, baseline + 0.25) for ≤ 3 min per 10 min; no three peaks in a row.
 - Floor: ≤ 0.2 for ≤ 4 min per 10 min, unless the movement is ambient (baseline ≤ 0.3 or groove free).
-- A `build` must *measure* ≥ 0.2 more tense/intense at its end than its start (measured spans), and
-  the following section starts lower. Automation lanes count too, since the checker plays code at
-  static faders and default knobs: fading the mix up scales its measured start down, and knobs swept
-  toward their bright/intense end (toward max when they follow nothing) count as rising tension.
+- A `build` must *measure* ≥ 0.2 more tense/intense at its end than its start (measured spans, which
+  already play level and knob lanes, §6), and the following section starts lower. A second estimate
+  read from the lanes alone is taken with max() — never added — so a fade or sweep the descriptors
+  under-read still counts: a mix faded up is credited with its measured end times the share of the
+  end's fader level still missing at the start, and knobs swept toward their bright/intense end
+  (toward max when they follow nothing) count as rising tension.
 - Same role at most twice in a row (`groove` three times); minimum 16 bars except `transition`.
 - Tempo: section bpm within ±4 of its movement; ramps ≥ 4 bars per 4 BPM; a new movement moves ≤ 12
   BPM unless through a beatless bridge (a section with no percussive parts) or half/double time.
@@ -555,7 +571,8 @@ depth:
    arrival, in the context and again when the turn is rendered), never free text.
 7. **Hardened inputs**: every socket event schema-validated, every handler wrapped, token buckets per
    event (and per network for requests), `heardCycle` bounds, per-network weight caps, one listener
-   per socket, connection caps from the engine.io handshake on, websocket-only transport.
+   per socket, connection caps and connection rates from the engine.io handshake on, websocket-only
+   transport.
 8. **Admin surface**: `/api/composer/*` requires `BSIDE_ADMIN_TOKEN` (timing-safe compare, rate
    limited). In development without a token, only direct loopback peers (raw socket address) are
    allowed; in production without a token the routes are disabled.

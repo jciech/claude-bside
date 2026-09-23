@@ -18,7 +18,7 @@ import {
 import { sanitizeRequestText } from '../../shared/text.ts';
 import type { Broadcaster, CrowdRuntime, CrowdSignal, CrowdSource, Logger, Nack, ServerConfig, Store } from '../types.ts';
 import { STORE_KEYS } from '../types.ts';
-import { aggregateKeep, aggregatePad, capByNetwork, type KeepAggregate, type PadAggregate, type Voice } from './aggregate.ts';
+import { aggregateKeep, aggregatePad, capByNetwork, majorityNetwork, type KeepAggregate, type PadAggregate, type Voice } from './aggregate.ts';
 import { createBucket, KeyedBuckets, take, type Bucket, type Rate } from './buckets.ts';
 import { serverNow } from './clock.ts';
 import { createIdentity, hueOf, networkKey } from './identity.ts';
@@ -79,6 +79,18 @@ interface ReactionRecord {
 interface SectionMark {
   id: string;
   startCycle: number;
+}
+
+/** Listener weights at one instant. */
+interface Weighed {
+  at: number;
+  version: number;
+  /** Capped per network, except the room's own network. */
+  weights: Map<Listener, number>;
+  /** trust × presence, uncapped. */
+  raw: Map<Listener, number>;
+  /** The network holding more than half of the capped weight, if one does. */
+  room: string | null;
 }
 
 interface Fork {
@@ -152,11 +164,12 @@ export function createCrowd(opts: {
   let lastPad: PadAggregate = aggregatePad([]);
   let lastKeep: KeepAggregate = { value: 0, effectiveVoices: 0 };
   let lastListeners = 0;
-  /** Present listeners with each network counted as at most networkWeightCap (the n_eff quorums' N). */
+  /** Present listeners with each network but the room's counted as at most networkWeightCap (the n_eff quorums' N). */
   let lastVoices = 0;
-  let lastNetworks = 0;
   /** Σ w over present listeners: the audience reactions are measured against. */
   let lastWeight = 0;
+  /** Σ trust × presence over present listeners, without the network cap. */
+  let lastRawWeight = 0;
   let pressureHeld = 0;
   let lastReplanBar = -Infinity;
   let keepHeld = 0;
@@ -179,7 +192,7 @@ export function createCrowd(opts: {
 
   // Weight cache: invalidated whenever listener state changes or time moves.
   let stateVersion = 0;
-  let weightCache: { at: number; version: number; weights: Map<Listener, number> } | null = null;
+  let weightCache: Weighed | null = null;
 
   // ─── Identity persistence ─────────────────────────────────────────────────────────────────────
 
@@ -261,18 +274,26 @@ export function createCrowd(opts: {
 
   const eligible = (l: Listener, t: number) => audibleMsAt(l, t) >= CROWD.warmupMs;
 
-  /** w = trust × presence, capped per network. Only listeners with w > 0 are present. */
-  function weights(t: number): Map<Listener, number> {
-    if (weightCache && weightCache.at === t && weightCache.version === stateVersion) return weightCache.weights;
+  /**
+   * w = trust × presence, capped per network. A network holding more than half of the capped weight
+   * is the room itself (a venue, an office, localhost, a household with one friend elsewhere): its
+   * listeners count one by one, uncapped. Only listeners with w > 0 are present.
+   */
+  function weighed(t: number): Weighed {
+    if (weightCache && weightCache.at === t && weightCache.version === stateVersion) return weightCache;
     const raw = new Map<Listener, number>();
     for (const l of listeners.values()) {
       const p = presence(l, t);
       if (p > 0) raw.set(l, trust(l, t) * p);
     }
     const capped = capByNetwork(raw, (l) => l.network, CROWD.networkWeightCap);
-    weightCache = { at: t, version: stateVersion, weights: capped };
-    return capped;
+    const room = majorityNetwork(capped, (l) => l.network);
+    const weights = room === null ? capped : new Map([...capped].map(([l, w]) => [l, l.network === room ? raw.get(l)! : w]));
+    weightCache = { at: t, version: stateVersion, weights, raw, room };
+    return weightCache;
   }
+
+  const weights = (t: number) => weighed(t).weights;
 
   const weightOfId = (t: number) => {
     const w = weights(t);
@@ -289,23 +310,27 @@ export function createCrowd(opts: {
   }
 
   function advance(t: number): void {
-    const w = weights(t);
+    const { weights: w, raw, room } = weighed(t);
     const padVoices: Voice<PadPoint>[] = [];
     const keepVoices: Voice<1 | -1>[] = [];
     const heads = new Map<string, number>();
     let present = 0;
+    let rawPresent = 0;
     for (const [l, weight] of w) {
+      // The room's own listeners are voices of their own; any other network counts as at most networkWeightCap.
+      const network = l.network === room ? undefined : l.network;
       const point = livePad(l, t);
-      padVoices.push({ weight, value: point, freshness: point ? Math.exp(-(t - l.pad!.at) / CROWD.padFreshMs) : 0, network: l.network });
+      padVoices.push({ weight, value: point, freshness: point ? Math.exp(-(t - l.pad!.at) / CROWD.padFreshMs) : 0, network });
       const ballot = l.ballot && current && l.ballot.sectionId === current.id && eligible(l, t) ? l.ballot : null;
-      keepVoices.push({ weight, value: ballot?.v ?? null, freshness: ballot ? Math.exp(-(t - ballot.at) / CROWD.keepFreshMs) : 0, network: l.network });
+      keepVoices.push({ weight, value: ballot?.v ?? null, freshness: ballot ? Math.exp(-(t - ballot.at) / CROWD.keepFreshMs) : 0, network });
       heads.set(l.network, (heads.get(l.network) ?? 0) + 1);
       present += weight;
+      rawPresent += raw.get(l) ?? 0;
     }
     lastVoices = 0;
-    for (const n of heads.values()) lastVoices += Math.min(n, CROWD.networkWeightCap);
-    lastNetworks = heads.size;
+    for (const [network, n] of heads) lastVoices += network === room ? n : Math.min(n, CROWD.networkWeightCap);
     lastWeight = present;
+    lastRawWeight = rawPresent;
     const pad = aggregatePad(padVoices);
     const ballots = aggregateKeep(keepVoices);
     if (t > smoothedAt) {
@@ -802,8 +827,8 @@ export function createCrowd(opts: {
       const dx = pull.x - (2 * baseline.brightness - 1);
       const dy = pull.y - (2 * baseline.intensity - 1);
       const magnitude = Math.max(Math.abs(dx), Math.abs(dy));
-      const quorum = (q: number) => Math.max(1, Math.min(q, lastVoices));
-      if (n > 0 && magnitude > CROWD.pressureOn && lastPad.effectiveVoices >= quorum(CROWD.pressureQuorum)) pressureHeld++;
+      const quorum = (effectiveVoices: number, q: number) => effectiveVoices >= Math.max(1, Math.min(q, lastVoices)) - CROWD.quorumSlack;
+      if (n > 0 && magnitude > CROWD.pressureOn && quorum(lastPad.effectiveVoices, CROWD.pressureQuorum)) pressureHeld++;
       else if (magnitude < CROWD.pressureOff) pressureHeld = 0;
       if (pressureHeld >= CROWD.pressureHoldBars && bar - lastReplanBar >= CROWD.replanCooldownBars) {
         const axis = Math.abs(dx) >= Math.abs(dy) ? 'brightness' : 'intensity';
@@ -813,27 +838,34 @@ export function createCrowd(opts: {
       }
 
       // Stay / Move on: repeats every bar while the lean holds, until consumeKeep() or the next section.
-      if (current && Math.abs(keep) > CROWD.keepOn && lastKeep.effectiveVoices >= quorum(CROWD.keepQuorum)) keepHeld++;
+      if (current && Math.abs(keep) > CROWD.keepOn && quorum(lastKeep.effectiveVoices, CROWD.keepQuorum)) keepHeld++;
       else keepHeld = 0;
       if (current && keepHeld >= CROWD.keepHoldBars) signals.push({ type: 'keep', direction: keep > 0 ? 1 : -1, sectionId: current.id });
 
       if (current) {
         const r = rates(current.startCycle, bar + 1);
-        // Distinct reporters, and on distinct networks unless the whole room shares one.
-        const enoughReporters = (type: Reaction) =>
-          r.reporters[type].listeners.size >= Math.min(2, Math.max(1, n)) && r.reporters[type].networks.size >= Math.min(2, Math.max(1, lastNetworks));
+        const { room } = weighed(nowMs);
+        // Distinct reporters, on distinct networks unless theirs is the room's.
+        const enoughReporters = (type: Reaction) => {
+          const { listeners: who, networks } = r.reporters[type];
+          return who.size >= Math.min(2, Math.max(1, n)) && (networks.size >= 2 || (room !== null && networks.has(room)));
+        };
         // A repeat trim needs fresh evidence: at least one Too much since the last one.
         const harsh = reactions.filter((x) => x.type === 'harsh' && x.at > lastHarshAt);
         if (harsh.length && bar - lastHarshBar >= CROWD.harshCooldownBars) {
           const recent = new Set(harsh.filter((x) => x.cycle >= bar - CROWD.harshWindowBars).map((x) => x.listenerId));
-          // A share of the room's (network-capped) weight, not of heads.
-          const w = weights(nowMs);
+          // A share of the room both with and without the network cap: sockets crowding in from one
+          // network can't reach it, and neither can one listener beside a crowd behind one network.
+          const { weights: w, raw } = weighed(nowMs);
           let reported = 0;
+          let reportedRaw = 0;
           for (const id of recent) {
             const l = listeners.get(id);
-            if (l) reported += w.get(l) ?? 0;
+            if (!l) continue;
+            reported += w.get(l) ?? 0;
+            reportedRaw += raw.get(l) ?? 0;
           }
-          const share = lastWeight > 0 ? reported / lastWeight : 0;
+          const share = lastWeight > 0 && lastRawWeight > 0 ? Math.min(reported / lastWeight, reportedRaw / lastRawWeight) : 0;
           if (share >= CROWD.harshShare || (enoughReporters('harsh') && zOf('harsh', r.perMin('harsh')) >= CROWD.reactionZ)) {
             signals.push({ type: 'harsh' });
             lastHarshBar = bar;
@@ -910,7 +942,7 @@ export function createCrowd(opts: {
         const l = listeners.get(id);
         return Boolean(l && trust(l, t) >= CROWD.telemetry.trustedTrust);
       };
-      return telemetryStore.corroborated(sinceCycle, isTrusted);
+      return telemetryStore.corroborated(sinceCycle, isTrusted, weighed(t).room);
     },
 
     reactionStats,

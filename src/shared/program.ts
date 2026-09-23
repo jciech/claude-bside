@@ -118,6 +118,12 @@ export interface MixerKeyframe {
   rampBars: number;
   /** Room pull mapped to macros, each -1..1. */
   macros: { brightness: number; intensity: number };
+  /**
+   * Always {} from the server; nothing reads it. Balance trims moved to ProgramPart.trimDb, but tabs
+   * still running a bundle from before that index this map without a guard, and nothing makes them
+   * reload across a redeploy.
+   */
+  trimsDb?: Record<string, never>;
 }
 
 /**
@@ -142,6 +148,7 @@ export const NEUTRAL_KEYFRAME: MixerKeyframe = {
   atCycle: 0,
   rampBars: 1,
   macros: { brightness: 0, intensity: 0 },
+  trimsDb: {},
 };
 
 export const EMPTY_MIXER: MixerState = { rev: 0, prev: null, next: NEUTRAL_KEYFRAME, safety: null };

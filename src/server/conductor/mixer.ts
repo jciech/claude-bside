@@ -3,7 +3,8 @@
 // MIN_CHANGE_LEAD ahead, ramping over 1 bar for small rooms and 2 for larger ones. A new keyframe is
 // only issued once the previous ramp has finished, so prev → next always reproduces what clients
 // were already playing. Also: the harsh-consensus safety trim and the needle (where the music is
-// heading, in pad space). Balance trims are not the mixer's: they travel with each part instance.
+// heading, in pad space). Balance trims are not the mixer's: they travel with each part instance
+// (keyframes still carry an empty `trimsDb` for tabs on an older bundle, see MixerKeyframe).
 import type { PadPoint } from '../../shared/protocol.ts';
 import type { MixerKeyframe, MixerState, SectionProgram } from '../../shared/program.ts';
 import { scoreBarAt } from '../../shared/schedule.ts';
@@ -45,6 +46,7 @@ export function mixerTick(input: MixerTickInput): MixerState | null {
     atCycle: input.earliestCycle,
     rampBars: input.pull.listeners <= 3 ? 1 : 2,
     macros: moved ? macros : current.macros,
+    trimsDb: {},
   };
   return { rev: state.rev + 1, prev: current, next, safety: expiredSafety ? null : state.safety };
 }

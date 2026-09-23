@@ -466,11 +466,18 @@ describe('Stay and Move on in the room', () => {
     expect(req.request.targetCycle).toBeGreaterThanOrEqual(only.startCycle + 16);
   });
 
-  async function grooveWithRequest(): Promise<{ room: Room; groove: ReturnType<typeof tail>; req: Room['claude']['requests'][number] }> {
+  /** Claude commits a 64-bar groove (reporting `composeMs` as its compose time), then the horizon request follows it. */
+  async function grooveWithRequest(composeMs?: number): Promise<{ room: Room; groove: ReturnType<typeof tail>; req: Room['claude']['requests'][number] }> {
     const room = await claudeRoom();
     await room.clock.advance(1);
     const first = room.claude.last();
-    await room.claude.commit(plan([section({ role: 'bridge', name: 'Groove', bars: 64 })]));
+    const groovePlan = plan([section({ role: 'bridge', name: 'Groove', bars: 64 })]);
+    if (composeMs === undefined) await room.claude.commit(groovePlan);
+    else {
+      const result = await first.tools.commit(groovePlan);
+      const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, calls: 1, ms: composeMs };
+      first.resolve({ status: 'committed', result, attempts: 1, usage });
+    }
     const groove = tail(room);
     for (let i = 0; i < 64 && room.claude.last() === first; i++) await room.clock.advance(2000);
     return { room, groove, req: room.claude.last() };
@@ -492,6 +499,46 @@ describe('Stay and Move on in the room', () => {
     const next = sectionsOf(room).find((s) => s.startCycle > groove.startCycle)!;
     expect(next.author).toBe('scripted');
     expect(next.startCycle).toBeLessThanOrEqual(end + 4);
+  });
+
+  it('a deadline the room pulled in with Move on is not a Claude failure when Claude misses it', async () => {
+    // Claude usually takes 50 s; the Move on leaves this request about 37 s.
+    const { room, groove, req } = await grooveWithRequest(50_000);
+    room.crowd.queued.push([{ type: 'keep', direction: -1, sectionId: groove.id }]);
+    await room.clock.advance(2001);
+    const end = groove.startCycle + plannedPlayBars(sectionsOf(room).find((s) => s.id === groove.id)!);
+    await room.clock.toCycle(end + 2);
+    expect(req.signal.reason).toBe('deadline');
+    const notes = () => room.conductor.previewContext().health.notes;
+    expect(notes().at(-1)).toMatch(/moved on/);
+    expect(notes().join(' ')).not.toMatch(/missed its deadline/);
+    // Two real failures after it are two in a row, not three: the breaker stays closed.
+    for (let i = 0; i < 2; i++) {
+      const before = room.claude.last();
+      for (let k = 0; k < 90 && room.claude.last() === before; k++) await room.clock.advance(2000);
+      expect(room.claude.last()).not.toBe(before);
+      room.claude.last().resolve({ status: 'failed', reason: 'api error', attempts: 1 });
+      await room.clock.advance(1);
+    }
+    expect(room.conductor.snapshot().composer.state).not.toBe('failed');
+    expect(notes().join(' ')).not.toMatch(/failed repeatedly/);
+  });
+
+  it('a deadline Stay moved out is still Claude’s to miss', async () => {
+    const { room, groove, req } = await grooveWithRequest(50_000);
+    room.crowd.queued.push([{ type: 'keep', direction: 1, sectionId: groove.id }]);
+    await room.clock.advance(2001);
+    for (let i = 0; i < 200 && !req.signal.aborted; i++) await room.clock.advance(2000);
+    expect(req.signal.reason).toBe('deadline');
+    const notes = () => room.conductor.previewContext().health.notes;
+    expect(notes().at(-1)).toMatch(/missed its deadline/);
+    for (let i = 0; i < 2; i++) {
+      const before = room.claude.last();
+      for (let k = 0; k < 90 && room.claude.last() === before; k++) await room.clock.advance(2000);
+      room.claude.last().resolve({ status: 'failed', reason: 'api error', attempts: 1 });
+      await room.clock.advance(1);
+    }
+    expect(room.conductor.snapshot().composer.state).toBe('failed');
   });
 
   it('Stay with a request in flight gives the composer the extra phrase too', async () => {

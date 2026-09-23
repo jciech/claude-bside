@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cpsToBpm } from '../../src/shared/music.ts';
+import type { MixerState } from '../../src/shared/program.ts';
 import { lockMs } from '../../src/shared/schedule.ts';
 import { cycleAtMs, msAtCycle } from '../../src/shared/timeline.ts';
 import { STORE_KEYS, type PersistedSession } from '../../src/server/types.ts';
@@ -356,7 +357,28 @@ describe('crowd each bar', () => {
       room.crowd.pullPoint = { x: bar % 2 ? 0.3 : 0, y: 0 };
       await room.clock.advance(2000);
     }
-    for (const m of room.broadcaster.of('mixer')) expect(Object.keys(m.next)).toEqual(['atCycle', 'rampBars', 'macros']);
+    for (const m of room.broadcaster.of('mixer')) {
+      expect(Object.keys(m.next)).toEqual(['atCycle', 'rampBars', 'macros', 'trimsDb']);
+      expect(m.next.trimsDb).toEqual({});
+    }
+  });
+
+  it('every mixer the room sends still reads in a tab running the bundle from before trims moved to the parts', async () => {
+    // That bundle's trimDbAt, verbatim: it indexes trimsDb on both keyframes without a guard.
+    const oldTrimDbAt = (state: MixerState, partId: string) => {
+      const { prev, next } = state as unknown as { prev: { trimsDb: Record<string, number> } | null; next: { trimsDb: Record<string, number> } };
+      return ((prev ?? next).trimsDb[partId] ?? 0) + (next.trimsDb[partId] ?? 0);
+    };
+    const room = await boot();
+    room.crowd.listeners = 5;
+    room.crowd.queued.push([{ type: 'harsh' }]);
+    for (let bar = 0; bar < 12; bar++) {
+      room.crowd.pullPoint = { x: bar % 2 ? 0.4 : -0.2, y: 0.1 };
+      await room.clock.advance(2000);
+    }
+    const sent = [room.conductor.snapshot().mixer, ...room.broadcaster.of('mixer')];
+    expect(sent.length).toBeGreaterThan(3);
+    for (const m of sent) expect(oldTrimDbAt(m, 'kick')).toBe(0);
   });
 });
 

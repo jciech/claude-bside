@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CrowdFrame, ForkState, RequestCard } from '../../src/shared/protocol.ts';
 import { STORE_KEYS } from '../../src/server/types.ts';
 import { TelemetrySchema } from '../../src/shared/protocol.ts';
-import { aggregateKeep, aggregatePad } from '../../src/server/room/aggregate.ts';
+import { aggregateKeep, aggregatePad, capByNetwork, majorityNetwork } from '../../src/server/room/aggregate.ts';
 import { createCrowd } from '../../src/server/room/crowd.ts';
 import { CROWD } from '../../src/server/room/params.ts';
 import { Sim, silentLog, testConfig } from './sim.ts';
@@ -41,6 +41,22 @@ describe('pad aggregate (silent-majority prior)', () => {
     expect(aggregateKeep(oneNet.map((v) => ({ ...v, value: 1 as const }))).effectiveVoices).toBeCloseTo(2);
     // Voices on distinct networks count as before.
     expect(aggregatePad(Array.from({ length: 5 }, (_, i) => ({ ...push, weight: 1, network: `10.0.${i}.0/24` }))).effectiveVoices).toBeCloseTo(5);
+  });
+
+  it('a network is the room only with more than half of the capped weight; an exact tie is no majority', () => {
+    const room = (venue: number, outsiders: number) => {
+      const w = new Map<string, number>();
+      for (let i = 0; i < venue; i++) w.set(`venue-${i}`, 1);
+      for (let i = 0; i < outsiders; i++) w.set(`out-${i}`, 1);
+      const networkOf = (id: string) => (id.startsWith('venue') ? '203.0.113.0/24' : id);
+      return majorityNetwork(capByNetwork(w, networkOf, CROWD.networkWeightCap), networkOf);
+    };
+    expect(room(10, 0)).toBe('203.0.113.0/24');
+    expect(room(10, 1)).toBe('203.0.113.0/24');
+    // 20 × (2/20) sums to a hair over 2.0: still a tie with two listeners elsewhere.
+    expect(room(20, 2)).toBeNull();
+    expect(room(3, 3)).toBeNull();
+    expect(room(0, 1)).toBe('out-0');
   });
 });
 
@@ -296,6 +312,19 @@ describe('requests', () => {
     expect(cards(sim, c!.listenerId)[0]!.text).toBe('scriptalert(1)/scriptslower');
   });
 
+  it('keep what the author typed: compatibility characters are only folded to find a hidden URL', () => {
+    const { sim, ls } = room();
+    const texts = ['ㅋㅋㅋ 신나는 음악', 'x² beats', 'ﬁne ｗｉｄｅ strings', 'play evil\uFF0Ecom', 'ｅｖｉｌ．ｃｏｍ lo-fi'];
+    const typed = texts.map((text, i) => {
+      const l = ls[i % ls.length]!;
+      sim.time.advance(61_000);
+      const res = sim.crowd.request(l.socketId, { text }, sim.now);
+      expect(res.ok).toBe(true);
+      return cards(sim, l.listenerId)[0]!.text;
+    });
+    expect(typed).toEqual(['ㅋㅋㅋ 신나는 음악', 'x² beats', 'ﬁne ｗｉｄｅ strings', 'play', 'lo-fi']);
+  });
+
   it('are rate limited per listener (1/min) and per room (30/min), and reject empty text', () => {
     const sim = new Sim();
     const ls = sim.join(40);
@@ -537,13 +566,29 @@ describe('telemetry', () => {
     small.crowd.tick(1, small.now, small.baseline);
     expect(small.crowd.telemetry(three[0]!.socketId, sample(1, -20, err), small.now)).toBeNull();
     expect(small.crowd.corroboratedErrors(0)).toEqual([]);
-    // Two sampled listeners behind one network are still one source.
+    // Two sampled listeners behind one network are still one source while other networks listen too.
     const home = new Sim();
     const pair = home.join(2, { address: (i) => `198.51.100.${i + 1}` });
+    home.join(2);
     home.warmUp();
     home.crowd.tick(1, home.now, home.baseline);
     for (const l of pair) expect(home.crowd.telemetry(l.socketId, sample(1, -20, err), home.now)).toBeNull();
     expect(home.crowd.corroboratedErrors(0)).toEqual([]);
+  });
+
+  it('a room behind one network (a venue, localhost) corroborates from two trusted listeners on it', () => {
+    const err = [{ sectionId: 'ep-1', partId: 'bass', code: 'eval' as const }];
+    const venue = new Sim();
+    const room = venue.join(12, { address: (i) => `198.51.100.${i + 1}` });
+    venue.join(1);
+    venue.warmUp();
+    venue.crowd.tick(1, venue.now, venue.baseline);
+    const sampled = room.filter((l) => venue.crowd.telemetry(l.socketId, sample(1, -20), venue.now) === null);
+    expect(sampled).toHaveLength(2);
+    venue.crowd.telemetry(sampled[0]!.socketId, sample(1, -20, err), venue.now);
+    expect(venue.crowd.corroboratedErrors(0)).toEqual([]);
+    venue.crowd.telemetry(sampled[1]!.socketId, sample(1, -20, err), venue.now);
+    expect(venue.crowd.corroboratedErrors(0)).toEqual([{ sectionId: 'ep-1', partId: 'bass', code: 'eval', clients: 2 }]);
   });
 
   it('reports at most 8 corroborated errors', () => {
