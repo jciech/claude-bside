@@ -1,0 +1,770 @@
+// Hap-level analysis of a section's parts as they will sound together: descriptors, limits, key fit,
+// density, sounds and the novelty fingerprint. Measures the events patterns actually produce — never
+// regexes over code. Queries with pattern.query(State) because queryArc swallows exceptions
+// (core/pattern.mjs:414-420), which is how broken code used to become silent.
+import * as core from '@strudel/core';
+import type { Issue, MixAnalysis, PartAnalysis, PartDigest, SectionFingerprint, SoundUse } from '../shared/analysis.ts';
+import type { CatalogSound } from '../shared/catalog.ts';
+import { BLOCKED_SOUNDS } from '../shared/catalog.ts';
+import { HAP_LIMITS, MAX_MIX_ONSETS_PER_BAR, MAX_PART_ONSETS_PER_BAR, findLimitViolations } from '../shared/limits.ts';
+import { PERCUSSIVE_ROLES, PITCHED_ROLES, bpmToCps, secondsPerBar, type PartRole } from '../shared/music.ts';
+import type { CheckPartInput } from '../server/types.ts';
+import { resolvedName, suggestSounds, type SoundIndex } from './catalog.ts';
+import {
+  chordCycleHash, clamp01, clusterScore, dbLoudness, densityScore, gainLoudness, intensityOf, lcm, mean, median, midiName,
+  normalise, periodOf, pitchClass, registerOf, round, stepOf, syncopation,
+} from './features.ts';
+import { captureLogs, cycleState } from './query.ts';
+import { resolveScales, type ScaleLookup } from './scales.ts';
+
+export interface AnalyzeSectionInput {
+  parts: (CheckPartInput & { pattern: any })[];
+  bpm: number;
+  scale: string | null;
+  bars: number;
+  index: SoundIndex;
+}
+
+export interface PartResult {
+  id: string;
+  analysis: PartAnalysis;
+  digest: PartDigest;
+  instrument: string;
+  errors: Issue[];
+  warnings: Issue[];
+  analyzeMs: number;
+}
+
+export interface SectionAnalysis {
+  parts: PartResult[];
+  mix: MixAnalysis;
+  fingerprint: SectionFingerprint;
+  errors: Issue[];
+  warnings: Issue[];
+}
+
+/** The vamp loops at most this many bars; the checker analyses one loop past the score. */
+export const VAMP_BARS = 8;
+export const MAX_ANALYSED_BARS = 72;
+const RANDOM_PROBE_BARS = 8;
+const RANDOM_SEED = 7919;
+/** Beyond the validator's static bound; only reachable if something upstream failed. */
+const HAPS_PER_QUERY_GUARD = 20_000;
+const KEY_FIT_ERROR = 0.6;
+const KEY_FIT_WARNING = 0.8;
+const MIN_PITCHED_FOR_KEY_FIT = 4;
+/** Reverb impulse and delay-line settings are per orbit: changing them per hap regenerates the IR
+ * (superdoughoutput.mjs:69-90) or modulates the shared delay. `room` itself is only a send level. */
+const CONSTANT_FX = ['roomsize', 'roomfade', 'roomlp', 'roomdim', 'ir', 'irspeed', 'irbegin', 'delaytime', 'delayfeedback', 'delaysync'];
+const FX_KEYS = ['room', 'roomsize', 'delay', 'delaytime', 'delayfeedback', 'cutoff', 'hcutoff', 'bandf', 'resonance', 'lpenv', 'distort',
+  'shape', 'crush', 'coarse', 'phaserdepth', 'tremolodepth', 'vib', 'detune', 'unison', 'speed', 'postgain'];
+const DEFAULT_GAIN = 0.8; // superdough default (superdough.mjs:182)
+const SYNTH_DEFAULT_MIDI = 36; // getFrequencyFromValue: `note || 36` (helpers.mjs:590-602)
+const SAMPLE_DEFAULT_MIDI = 36; // getCommonSampleInfo: valueToMidi(hapValue, 36)
+const SOUNDFONT_DEFAULT_MIDI = 48; // fontloader: note = 'c3'
+
+interface Onset {
+  bar: number;
+  pos: number;
+  dur: number;
+  sound: string;
+  entry: CatalogSound | undefined;
+  gain: number;
+  midi: number | null;
+  bright: number;
+  lowEnd: boolean;
+  percussive: boolean;
+  active: boolean;
+  /** Numeric effect params present on this hap (for PartAnalysis.fx). */
+  fx: Record<string, number> | null;
+}
+
+interface Scan {
+  part: AnalyzeSectionInput['parts'][number];
+  onsets: Onset[];
+  /** Onsets per scanned bar, regardless of the window (density limits). */
+  perBar: Map<number, number>;
+  signatures: string[];
+  random: boolean;
+  errors: Issue[];
+  warnings: Issue[];
+  failed: boolean;
+}
+
+export function analyzeSection(input: AnalyzeSectionInput, hooks: { onPart?(id: string): void } = {}): SectionAnalysis {
+  const bars = Math.max(1, Math.round(input.bars));
+  const analysedBars = Math.min(MAX_ANALYSED_BARS, bars + Math.min(VAMP_BARS, bars));
+  const loopBars = Math.min(VAMP_BARS, bars);
+  const cps = bpmToCps(input.bpm);
+  const sectionErrors: Issue[] = [];
+  const sectionWarnings: Issue[] = [];
+  const scales = resolveScales(input.scale, analysedBars, sectionErrors);
+
+  const results: PartResult[] = [];
+  const scans: Scan[] = [];
+  for (const part of input.parts) {
+    hooks.onPart?.(part.id);
+    const t0 = now();
+    const scan = scanPart(part, { index: input.index, cps, bars, analysedBars, loopBars });
+    const result = describePart(scan, { bars, bpm: input.bpm, scales });
+    results.push({ ...result, analyzeMs: round(now() - t0, 2) });
+    scans.push(scan);
+  }
+
+  const mix = mixAnalysis(scans, { bars, analysedBars, bpm: input.bpm, scales, errors: sectionErrors });
+  const fingerprint = fingerprintOf(scans, mix.descriptors, { bars, bpm: input.bpm, scale: input.scale });
+  return { parts: results, mix, fingerprint, errors: sectionErrors, warnings: sectionWarnings };
+}
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+// ─── Querying ─────────────────────────────────────────────────────────────────────────────────────
+
+interface ScanContext {
+  index: SoundIndex;
+  cps: number;
+  bars: number;
+  analysedBars: number;
+  loopBars: number;
+}
+
+function scanPart(part: Scan['part'], ctx: ScanContext): Scan {
+  const scan: Scan = { part, onsets: [], perBar: new Map(), signatures: [], random: false, errors: [], warnings: [], failed: false };
+  const problems = new ProblemLog(part.id);
+  const firstBar = Math.min(0, part.enterBar);
+  const scoreBar = (bar: number) => (bar < ctx.bars ? bar : ctx.bars - ctx.loopBars + ((bar - ctx.bars) % ctx.loopBars));
+  const activeAt = (bar: number) => {
+    const b = scoreBar(bar);
+    return b >= part.enterBar && (part.exitBar === null || b < part.exitBar);
+  };
+  const controls = { _cps: ctx.cps };
+  let continuous = 0;
+
+  const { logs } = captureLogs(() => {
+    for (let bar = firstBar; bar < ctx.analysedBars; bar++) {
+      const pb = part.patternBarAtStart + bar;
+      let haps: any[];
+      try {
+        haps = part.pattern.query(cycleState(pb, pb + 1, controls));
+      } catch (e) {
+        scan.errors.push(issue('runtime', `Playing bar ${bar} failed: ${(e as Error).message}`, part.id, runtimeHint((e as Error).message)));
+        scan.failed = true;
+        return;
+      }
+      if (haps.length > HAPS_PER_QUERY_GUARD) {
+        scan.errors.push(issue('density', `The part produces ${haps.length} events in bar ${bar}; a part may play at most ${MAX_PART_ONSETS_PER_BAR} per bar.`, part.id));
+        scan.failed = true;
+        return;
+      }
+      const sig: string[] = [];
+      let count = 0;
+      for (const hap of haps) {
+        if (!hap.whole) {
+          continuous++;
+          continue;
+        }
+        if (!hap.hasOnset()) continue;
+        count++;
+        const begin = hap.whole.begin.valueOf() as number;
+        const dur = (hap.whole.end.valueOf() as number) - begin;
+        sig.push(`${round(begin - pb, 4)}/${round(dur, 4)}/${stable(hap.value)}`);
+        const onset = readOnset(hap.value, { bar, pos: begin - pb, dur, active: activeAt(bar) }, ctx, problems);
+        if (onset) scan.onsets.push(onset);
+      }
+      scan.perBar.set(bar, count);
+      if (bar >= 0) scan.signatures.push(sig.sort().join(';'));
+    }
+    scan.random = !scan.failed && isRandom(part, scan.signatures, controls, ctx.analysedBars);
+  });
+
+  problems.flush(scan, logs);
+  if (!scan.failed && scan.onsets.length === 0 && continuous > 0) {
+    scan.errors.push(issue('silent', 'The part is a continuous signal with no events, so it never triggers a sound.', part.id,
+      'Give it structure, e.g. .segment(8), or use the signal as a parameter: .lpf(sine.range(400, 2000)).'));
+  }
+  return scan;
+}
+
+function isRandom(part: Scan['part'], signatures: string[], controls: Record<string, unknown>, analysedBars: number): boolean {
+  const probe = Math.min(RANDOM_PROBE_BARS, analysedBars, signatures.length);
+  for (let bar = 0; bar < probe; bar++) {
+    const pb = part.patternBarAtStart + bar;
+    const haps = (part.pattern.query(cycleState(pb, pb + 1, { ...controls, randSeed: RANDOM_SEED })) as any[])
+      .filter((h) => h.whole && h.hasOnset())
+      .map((h) => `${round(h.whole.begin.valueOf() - pb, 4)}/${round(h.whole.end.valueOf() - h.whole.begin.valueOf(), 4)}/${stable(h.value)}`);
+    if (haps.sort().join(';') !== signatures[bar]) return true;
+  }
+  return false;
+}
+
+function stable(v: unknown): string {
+  if (v === null || typeof v !== 'object') return typeof v === 'number' ? String(round(v, 5)) : JSON.stringify(v) ?? 'undefined';
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
+  return `{${Object.keys(v).sort().map((k) => `${k}:${stable((v as Record<string, unknown>)[k])}`).join(',')}}`;
+}
+
+const numberOr = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+const clampTo = (key: string, v: number) => {
+  const range = HAP_LIMITS[key];
+  return range ? Math.min(range.max, Math.max(range.min, v)) : v;
+};
+
+/** Collects per-hap problems once per kind, so a 72-bar scan yields one issue per problem. */
+class ProblemLog {
+  readonly partId: string;
+  private readonly limits = new Map<string, { value: unknown; bar: number; reason: string; range: string }>();
+  private readonly fx = new Map<string, Set<number>>();
+  private readonly unknown = new Map<string, { s: string; bank?: string; bar: number; hint?: string }>();
+  private readonly blocked = new Set<string>();
+  private readonly outOfRange = new Map<string, { notes: Set<string>; bar: number; range: [number, number] }>();
+  private readonly wraps = new Map<string, { n: number; count: number }>();
+  private nonObject: { value: string; bar: number } | null = null;
+  private badNote: string | null = null;
+  private nWithoutScale: string | null = null;
+  constructor(partId: string) {
+    this.partId = partId;
+  }
+
+  limit(key: string, value: unknown, bar: number, reason: string, range: string): void {
+    const prev = this.limits.get(key);
+    const worse = typeof value === 'number' && typeof prev?.value === 'number' ? Math.abs(value) > Math.abs(prev.value) : !prev;
+    if (worse) this.limits.set(key, { value, bar, reason, range });
+  }
+  fxValue(key: string, v: unknown): void {
+    if (typeof v !== 'number' && typeof v !== 'string') return;
+    const set = this.fx.get(key) ?? new Set<number>();
+    set.add(typeof v === 'number' ? round(v, 6) : NaN);
+    this.fx.set(key, set);
+  }
+  isUnknown(id: string): boolean {
+    return this.unknown.has(id);
+  }
+  unknownSound(id: string, s: string, bank: string | undefined, bar: number, hint: string | undefined): void {
+    if (!this.unknown.has(id)) this.unknown.set(id, { s, bank, bar, hint });
+  }
+  blockedSound(id: string): void {
+    this.blocked.add(id);
+  }
+  soundfontRange(id: string, midi: number, bar: number, range: [number, number]): void {
+    const r = this.outOfRange.get(id) ?? { notes: new Set<string>(), bar, range };
+    r.notes.add(midiName(midi));
+    this.outOfRange.set(id, r);
+  }
+  wrap(id: string, n: number, count: number): void {
+    this.wraps.set(id, { n: Math.max(n, this.wraps.get(id)?.n ?? 0), count });
+  }
+  nonObjectValue(value: unknown, bar: number): void {
+    this.nonObject ??= { value: JSON.stringify(value)?.slice(0, 40) ?? String(value), bar };
+  }
+  invalidNote(message: string): void {
+    this.badNote ??= message;
+  }
+  synthWithN(sound: string): void {
+    this.nWithoutScale ??= sound;
+  }
+
+  flush(scan: Scan, logs: string[]): void {
+    const id = this.partId;
+    const err = (rule: string, message: string, hint?: string) => scan.errors.push(issue(rule, message, id, hint));
+    const warn = (rule: string, message: string, hint?: string) => scan.warnings.push(issue(rule, message, id, hint, 'warning'));
+    if (this.nonObject) {
+      err('value', `The pattern produces plain values (${this.nonObject.value}, bar ${this.nonObject.bar}) instead of sounds.`, 'Wrap it in a control: note("c e g"), n("0 2").scale("C:minor") or s("bd sd").');
+    }
+    for (const [key, v] of this.limits) {
+      if (v.reason === 'range') err('limit', `${key} reaches ${String(v.value)} in bar ${v.bar}; it must stay within ${v.range}.`, limitHint(key, v.range));
+      else if (v.reason === 'engine-owned') err('denied', `The key "${key}" is set by the engine, not by part code.`);
+      else err('limit', `The key "${key}" holds a structured value; only numbers and strings are allowed.`);
+    }
+    for (const [key, values] of this.fx) {
+      if (values.size > 1) {
+        const shown = [...values].slice(0, 4).map((x) => (Number.isNaN(x) ? '…' : String(x))).join(', ');
+        err('constant-fx', `${key} changes within the part (${shown}); reverb and delay settings are shared per part and must stay constant.`,
+          `Set .${key}(…) to one value; vary .room() or .delay() (the send amounts) instead.`);
+      }
+    }
+    for (const u of this.unknown.values()) {
+      err('unknown-sound', `Unknown sound "${u.bank ? `${u.s}" in bank "${u.bank}` : u.s}" (first in bar ${u.bar}).`, u.hint);
+    }
+    for (const sid of this.blocked) err('denied', `The sound "${sid}" is not available.`, 'Pick another sound from the catalog.');
+    for (const [sid, r] of this.outOfRange) {
+      err('sound-range', `${sid} can only play ${midiName(r.range[0])}–${midiName(r.range[1])}; ${[...r.notes].slice(0, 5).join(', ')} (from bar ${r.bar}) would be silent or hang.`,
+        'Transpose the notes into the instrument\'s range (.transpose(12) / octave numbers) or pick another instrument.');
+    }
+    for (const [sid, w] of this.wraps) {
+      warn('sample-index', `"${sid}" has ${w.count} sample${w.count === 1 ? '' : 's'}; n=${w.n} wraps around to ${w.n % Math.max(1, w.count)}.`, `Use n values 0–${w.count - 1}.`);
+    }
+    if (this.badNote) err('value', this.badNote, 'Notes are names like "c3 eb3" or MIDI numbers; do arithmetic before the control: note("0 2".add(48)) or n(…).scale(…).');
+    if (this.nWithoutScale) {
+      warn('n-without-scale', `The synth "${this.nWithoutScale}" ignores n() for pitch, so every note plays C2.`, 'Use note("c3 e3") or n("0 2 4").scale("C:minor").');
+    }
+    const seen = new Set<string>();
+    for (const line of logs) {
+      if (seen.has(line)) continue;
+      seen.add(line);
+      if (/Can't do arithmetic on control pattern/.test(line)) {
+        err('arith-on-control', '.add()/.sub()/.mul() on a control pattern like note(…) or n(…) does nothing.',
+          'Do arithmetic before the control: n("0 2".add(12)), or transpose the notes: .transpose(12).');
+      } else if (/\berror\b/i.test(line)) {
+        err('runtime', line.replace(/^\[\w+\]\s*(error:)?\s*/i, 'Strudel: '), runtimeHint(line));
+      } else if (!/^\[bside\]/.test(line)) {
+        warn('strudel', line.replace(/^\[\w+\]:?\s*/, 'Strudel: '));
+      }
+    }
+  }
+}
+
+interface ReadContext {
+  bar: number;
+  pos: number;
+  dur: number;
+  active: boolean;
+}
+
+function readOnset(value: unknown, at: ReadContext, ctx: ScanContext, problems: ProblemLog): Onset | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    problems.nonObjectValue(value, at.bar);
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  for (const violation of findLimitViolations(v)) {
+    const range = violation.range ? `${violation.range.min}–${violation.range.max}` : '';
+    problems.limit(violation.key, violation.value, at.bar, violation.reason, range);
+  }
+  for (const key of CONSTANT_FX) if (key in v) problems.fxValue(key, v[key]);
+
+  const s = typeof v.s === 'string' ? v.s : v.s === undefined ? 'triangle' : String(v.s);
+  if (s === '-' || s === '~' || s === '_') return null; // superdough skips these (superdough.mjs:533)
+  const bank = typeof v.bank === 'string' ? v.bank : undefined;
+  const id = resolvedName(s, bank);
+  const entry = ctx.index.resolve(s, bank);
+  if (BLOCKED_SOUNDS.has(id)) problems.blockedSound(id);
+  else if (!entry && !problems.isUnknown(id)) problems.unknownSound(id, s, bank, at.bar, suggestSounds(ctx.index, s, bank));
+
+  if (entry?.kind === 'sample' && typeof v.n === 'number' && entry.count > 0 && v.n >= entry.count) problems.wrap(entry.id, v.n, entry.count);
+
+  const midi = pitchOf(v, entry, problems);
+  if (midi !== null && entry?.kind === 'soundfont' && entry.range && (midi < entry.range[0] || midi > entry.range[1])) {
+    problems.soundfontRange(entry.id, midi, at.bar, entry.range);
+  }
+
+  const gain = clampTo('gain', numberOr(v.gain, DEFAULT_GAIN)) * clampTo('velocity', numberOr(v.velocity, 1)) * clampTo('postgain', numberOr(v.postgain, 1));
+  const pitched = midi !== null;
+  let bright = entry?.brightness ?? 0.5;
+  if (pitched) bright += ((midi - 60) / 60) * 0.4;
+  if (typeof v.cutoff === 'number') bright *= 0.25 + 0.75 * clamp01(Math.log(Math.max(v.cutoff, 1) / 80) / Math.log(20000 / 80));
+  if (typeof v.hcutoff === 'number') bright += 0.25 * clamp01(Math.log(Math.max(v.hcutoff, 1) / 80) / Math.log(8000 / 80));
+  if (typeof v.distort === 'number' || typeof v.shape === 'number' || typeof v.crush === 'number') bright += 0.1;
+  const family = entry?.family ?? '';
+  let fx: Record<string, number> | null = null;
+  for (const key of FX_KEYS) if (typeof v[key] === 'number' && Number.isFinite(v[key])) (fx ??= {})[key] = v[key] as number;
+  return {
+    bar: at.bar,
+    pos: at.pos,
+    dur: at.dur * numberOr(v.clip, 1),
+    sound: entry?.id ?? id,
+    entry,
+    gain,
+    midi,
+    bright: clamp01(bright),
+    lowEnd: entry?.category === 'bass' || family.endsWith('/kick') || (pitched && midi < 48),
+    percussive: entry?.category === 'percussion',
+    active: at.active,
+    fx,
+  };
+}
+
+/** MIDI pitch as superdough will play it, or null for unpitched sounds. */
+function pitchOf(v: Record<string, unknown>, entry: CatalogSound | undefined, problems: ProblemLog): number | null {
+  let midi: number | null = null;
+  const explicit = v.freq !== undefined || v.note !== undefined;
+  try {
+    if (typeof v.freq === 'number') midi = core.freqToMidi(v.freq) as number;
+    else if (typeof v.note === 'string') midi = core.noteToMidi(v.note) as number;
+    else if (typeof v.note === 'number') midi = v.note;
+    else if (v.note !== undefined) problems.invalidNote(`note has the value ${JSON.stringify(v.note)?.slice(0, 40)}, which is not a note.`);
+  } catch (e) {
+    problems.invalidNote(`Invalid note ${JSON.stringify(v.note)}: ${(e as Error).message}`);
+  }
+  if (midi !== null && !Number.isFinite(midi)) midi = null;
+  const kind = entry?.kind;
+  if (kind === 'synth' || kind === 'wavetable') {
+    if (!entry!.pitched) return null;
+    if (!midi) {
+      if (v.n !== undefined && !explicit) problems.synthWithN(entry!.id);
+      midi = SYNTH_DEFAULT_MIDI;
+    }
+    return midi + 12 * numberOr(v.octave, 0);
+  }
+  if (kind === 'soundfont') return midi ?? SOUNDFONT_DEFAULT_MIDI;
+  if (midi !== null) return midi;
+  return entry?.pitched ? SAMPLE_DEFAULT_MIDI : null;
+}
+
+// ─── Per part ─────────────────────────────────────────────────────────────────────────────────────
+
+interface PartContext {
+  bars: number;
+  bpm: number;
+  scales: ScaleLookup | null;
+}
+
+/** A part's own material includes its pickup bars; the section mix covers score bars 0…bars-1. */
+const isPartOnset = (o: Onset, bars: number) => o.active && o.bar < bars;
+const isMixOnset = (o: Onset, bars: number) => o.active && o.bar >= 0 && o.bar < bars;
+
+function describePart(scan: Scan, ctx: PartContext): Omit<PartResult, 'analyzeMs'> {
+  const { part } = scan;
+  const errors = [...scan.errors];
+  const warnings = [...scan.warnings];
+  const firstBar = Math.min(0, part.enterBar);
+
+  for (const [bar, count] of scan.perBar) {
+    if (count > MAX_PART_ONSETS_PER_BAR) {
+      errors.push(issue('density', `The part plays ${count} events in bar ${bar}; a part may play at most ${MAX_PART_ONSETS_PER_BAR} per bar.`, part.id,
+        'Thin it out: fewer *n / ply / fast, or split the idea across parts.'));
+      break;
+    }
+  }
+
+  const activeBars: number[] = [];
+  for (let b = firstBar; b < ctx.bars; b++) if (b >= part.enterBar && (part.exitBar === null || b < part.exitBar)) activeBars.push(b);
+  const onsets = scan.onsets.filter((o) => isPartOnset(o, ctx.bars));
+  const counts = activeBars.map((b) => onsets.filter((o) => o.bar === b).length);
+  const nBars = Math.max(1, activeBars.length);
+  const onsetsPerBar = onsets.length / nBars;
+  const gainSum = onsets.reduce((a, o) => a + o.gain, 0);
+
+  const sounds = soundUses(onsets);
+  const pitched = onsets.filter((o) => o.midi !== null);
+  const midis = pitched.map((o) => o.midi!);
+  const keyFit = keyFitOf(pitched, ctx.scales);
+  const pitch = midis.length
+    ? {
+        minMidi: round(Math.min(...midis), 2),
+        maxMidi: round(Math.max(...midis), 2),
+        medianMidi: round(median(midis), 2),
+        distinct: new Set(midis.map(Math.round)).size,
+        register: registerOf(median(midis)),
+        keyFit: keyFit === null ? null : round(keyFit.fit),
+      }
+    : null;
+
+  if (keyFit && !part.chromatic && !PERCUSSIVE_ROLES.has(part.role) && pitched.length >= MIN_PITCHED_FOR_KEY_FIT && keyFit.fit < KEY_FIT_WARNING) {
+    const outside = keyFit.outside.slice(0, 5).map(([note, bar]) => `${note} (bar ${bar})`).join(', ');
+    const message = `Only ${Math.round(keyFit.fit * 100)}% of the part's notes are in the section's scale; outside: ${outside}.`;
+    const hint = 'Use n("…").scale(…) with the section scale, fix the notes, or set chromatic: true if the colour is intended.';
+    if (keyFit.fit < KEY_FIT_ERROR) errors.push(issue('key-fit', message, part.id, hint));
+    else warnings.push(issue('key-fit', message, part.id, hint, 'warning'));
+  }
+
+  const syncs = activeBars.map((b) => onsets.filter((o) => o.bar === b).map((o) => stepOf(o.pos))).filter((s) => s.length > 1).map(syncopation);
+  const grid = new Array<number>(16).fill(0);
+  for (const o of onsets) grid[stepOf(o.pos)]! += 1;
+  const loudness = loudnessOf(onsets, nBars, ctx.bpm);
+  const brightness = gainSum ? onsets.reduce((a, o) => a + o.bright * o.gain, 0) / gainSum : 0;
+  const lowEndShare = gainSum ? onsets.filter((o) => o.lowEnd).reduce((a, o) => a + o.gain, 0) / gainSum : 0;
+  const percussiveShare = gainSum ? onsets.filter((o) => o.percussive).reduce((a, o) => a + o.gain, 0) / gainSum : 0;
+  const silent = onsets.length === 0 || gainSum === 0;
+  const period = scan.random ? null : periodOf(scan.signatures);
+
+  if (silent && !errors.some((e) => e.rule === 'silent' || e.rule === 'runtime')) {
+    warnings.push(issue('silent', activeBars.length ? `The part makes no sound in bars ${activeBars[0]}–${activeBars[activeBars.length - 1]}.` : 'The part never plays in this section (check enterBar/exitBar).', part.id, undefined, 'warning'));
+  }
+
+  const fx: Record<string, number> = {};
+  for (const o of onsets) for (const [k, v] of Object.entries(o.fx ?? {})) fx[k] = round(Math.max(fx[k] ?? -Infinity, v), 4);
+
+  const energy = silent ? 0 : intensityOf({ density: densityScore(onsetsPerBar), loudness: loudness.score, brightness, lowEnd: lowEndShare, percussive: percussiveShare, bpm: ctx.bpm });
+  const analysis: PartAnalysis = {
+    id: part.id,
+    role: part.role,
+    onsetsPerBar: round(onsetsPerBar, 2),
+    densityPerBar: { min: counts.length ? Math.min(...counts) : 0, mean: round(mean(counts), 2), max: counts.length ? Math.max(...counts) : 0 },
+    sounds,
+    pitch,
+    syncopation: round(mean(syncs)),
+    grid16: normalise(grid),
+    loudness,
+    brightness: round(brightness),
+    lowEndShare: round(lowEndShare),
+    percussiveShare: round(percussiveShare),
+    random: scan.random,
+    period,
+    energy: round(energy),
+    silent,
+    fx,
+  };
+  const instrument = instrumentOf(sounds, onsets);
+  const digest: PartDigest = {
+    id: part.id,
+    role: part.role,
+    instrument,
+    evPerBar: round(onsetsPerBar, 1),
+    register: pitch?.register ?? null,
+    sync: round(analysis.syncopation, 2),
+    bright: round(brightness, 2),
+    loud: round(loudness.score, 2),
+    period: scan.random ? 'random' : period,
+    keyFit: pitch?.keyFit ?? null,
+  };
+  return { id: part.id, analysis, digest, instrument, errors, warnings };
+}
+
+function soundUses(onsets: Onset[]): SoundUse[] {
+  const total = onsets.reduce((a, o) => a + o.gain, 0);
+  const by = new Map<string, { entry: CatalogSound | undefined; onsets: number; gain: number }>();
+  for (const o of onsets) {
+    const u = by.get(o.sound) ?? { entry: o.entry, onsets: 0, gain: 0 };
+    u.onsets++;
+    u.gain += o.gain;
+    by.set(o.sound, u);
+  }
+  return [...by]
+    .map(([id, u]) => ({
+      id,
+      kind: u.entry?.kind ?? 'sample',
+      family: u.entry?.family ?? 'unknown',
+      known: !!u.entry,
+      onsets: u.onsets,
+      share: total ? round(u.gain / total) : 0,
+    }))
+    .sort((a, b) => b.share - a.share || b.onsets - a.onsets);
+}
+
+function instrumentOf(sounds: SoundUse[], onsets: Onset[]): string {
+  const top = sounds[0];
+  if (!top) return '';
+  return onsets.find((o) => o.sound === top.id)?.entry?.label ?? top.id;
+}
+
+function keyFitOf(pitched: Onset[], scales: ScaleLookup | null): { fit: number; outside: [string, number][] } | null {
+  if (!scales) return null;
+  let inside = 0;
+  let counted = 0;
+  const outside: [string, number][] = [];
+  for (const o of pitched) {
+    if (o.bar < 0) continue;
+    const pcs = scales(o.bar, o.pos);
+    if (!pcs) continue;
+    counted++;
+    if (pcs.has(pitchClass(o.midi!))) inside++;
+    else if (outside.length < 12 && !outside.some(([n]) => n === midiName(o.midi!))) outside.push([midiName(o.midi!), o.bar]);
+  }
+  return counted ? { fit: inside / counted, outside } : null;
+}
+
+/** Loudness from measured catalog levels when every sounding sound has one, else a gain prior. */
+function loudnessOf(onsets: Onset[], nBars: number, bpm: number, level = 1): PartAnalysis['loudness'] {
+  const gains = onsets.map((o) => o.gain * level);
+  const meanGain = gains.length ? mean(gains) : 0;
+  const peakOverlapGain = peakOverlap(onsets.map((o) => ({ begin: o.bar + o.pos, end: o.bar + o.pos + o.dur, gain: o.gain * level })));
+  const estRmsDb = estimateRmsDb(onsets, nBars, bpm, level);
+  const score = estRmsDb !== null ? dbLoudness(estRmsDb) : gainLoudness(gains.reduce((a, b) => a + b, 0) / nBars);
+  return { meanGain: round(meanGain), peakOverlapGain: round(peakOverlapGain), score: round(score), estRmsDb: estRmsDb === null ? null : round(estRmsDb, 1) };
+}
+
+function estimateRmsDb(onsets: Onset[], nBars: number, bpm: number, level = 1): number | null {
+  if (!onsets.length || onsets.some((o) => !o.entry?.level)) return null;
+  const barSec = secondsPerBar(bpm);
+  let energy = 0;
+  for (const o of onsets) {
+    const g = o.gain * level;
+    const dur = Math.min(1, Math.max(0.05, o.dur * barSec));
+    energy += g * g * 10 ** (o.entry!.level!.rmsDb / 10) * dur;
+  }
+  const power = energy / (nBars * barSec);
+  return power > 0 ? 10 * Math.log10(power) : null;
+}
+
+function peakOverlap(spans: { begin: number; end: number; gain: number }[]): number {
+  const events: [number, number][] = [];
+  for (const s of spans) events.push([s.begin, s.gain], [Math.max(s.end, s.begin + 1e-6), -s.gain]);
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let cur = 0;
+  let peak = 0;
+  for (const [, g] of events) {
+    cur += g;
+    peak = Math.max(peak, cur);
+  }
+  return peak;
+}
+
+// ─── Mix ──────────────────────────────────────────────────────────────────────────────────────────
+
+interface MixContext {
+  bars: number;
+  analysedBars: number;
+  bpm: number;
+  scales: ScaleLookup | null;
+  errors: Issue[];
+}
+
+interface RangeDescription {
+  intensity: number;
+  brightness: number;
+  density: number;
+  D: number;
+  harmonic: number;
+  sync: number;
+}
+
+function mixAnalysis(scans: Scan[], ctx: MixContext): MixAnalysis {
+  const audible = scans.filter((s) => s.part.level > 0 && !s.failed);
+  const perBar = new Array<number>(ctx.analysedBars).fill(0);
+  for (const s of audible) for (const o of s.onsets) if (o.active && o.bar >= 0 && o.bar < ctx.analysedBars) perBar[o.bar]! += 1;
+  const worst = perBar.reduce((best, count, bar) => (count > best.count ? { count, bar } : best), { count: 0, bar: 0 });
+  if (worst.count > MAX_MIX_ONSETS_PER_BAR) {
+    ctx.errors.push(issue('density', `All parts together play ${worst.count} events in bar ${worst.bar}; a section may play at most ${MAX_MIX_ONSETS_PER_BAR} per bar.`, 'mix',
+      'Thin out the busiest parts or give them different entry bars.'));
+  }
+
+  const section = perBar.slice(0, ctx.bars);
+  const describe = (from: number, to: number) => describeRange(audible, from, to, ctx);
+  const edge = Math.min(4, ctx.bars);
+  const start = describe(0, edge);
+  const end = describe(ctx.bars - edge, ctx.bars);
+  const whole = describe(0, ctx.bars);
+  const rise = clamp01(4 * (end.brightness - start.brightness) + 2 * (end.D - start.D));
+  const tension = (d: RangeDescription, r: number) => round(clamp01(0.4 * d.harmonic + 0.3 * d.sync + 0.3 * r));
+  const tStart = tension(start, 0);
+  const tEnd = tension(end, rise);
+
+  const allSection = audible.flatMap((s) => s.onsets.filter((o) => isMixOnset(o, ctx.bars)).map((o) => ({ begin: o.bar + o.pos, end: o.bar + o.pos + o.dur, gain: o.gain * s.part.level })));
+  const periods = audible.filter((s) => s.onsets.some((o) => isMixOnset(o, ctx.bars))).map((s) => (s.random ? null : periodOf(s.signatures)));
+  const period = periods.length && periods.every((p): p is number => p !== null) ? periods.reduce((a, b) => lcm(a, b), 1) : null;
+
+  return {
+    descriptors: { intensity: round(whole.intensity), brightness: round(whole.brightness), density: round(whole.density), tension: round((tStart + tEnd) / 2) },
+    spans: {
+      intensity: { start: round(start.intensity), end: round(end.intensity) },
+      brightness: { start: round(start.brightness), end: round(end.brightness) },
+      density: { start: round(start.density), end: round(end.density) },
+      tension: { start: tStart, end: tEnd },
+    },
+    onsetsPerBar: round(mean(section), 2),
+    maxOnsetsPerBar: Math.max(0, ...section),
+    peakOverlapGain: round(peakOverlap(allSection)),
+    audibleParts: audible.filter((s) => s.onsets.some((o) => isMixOnset(o, ctx.bars))).length,
+    period: period !== null && period <= ctx.bars ? period : null,
+  };
+}
+
+function describeRange(scans: Scan[], from: number, to: number, ctx: MixContext): RangeDescription {
+  const nBars = Math.max(1, to - from);
+  const inRange = (o: Onset) => o.active && o.bar >= from && o.bar < to;
+  const parts = scans.map((s) => ({ scan: s, onsets: s.onsets.filter(inRange) })).filter((p) => p.onsets.length > 0);
+  const weighted = parts.flatMap((p) => p.onsets.map((o) => ({ o, w: o.gain * p.scan.part.level })));
+  const wSum = weighted.reduce((a, x) => a + x.w, 0);
+  const share = (pred: (o: Onset) => boolean) => (wSum ? weighted.filter((x) => pred(x.o)).reduce((a, x) => a + x.w, 0) / wSum : 0);
+  const count = weighted.length;
+  const D = densityScore(count / nBars);
+  const brightness = wSum ? weighted.reduce((a, x) => a + x.o.bright * x.w, 0) / wSum : 0;
+
+  const measured = parts.every((p) => p.onsets.every((o) => o.entry?.level));
+  let loudness: number;
+  if (measured && parts.length) {
+    const power = parts.reduce((a, p) => {
+      const db = estimateRmsDb(p.onsets, nBars, ctx.bpm, p.scan.part.level);
+      return a + (db === null ? 0 : 10 ** (db / 10));
+    }, 0);
+    loudness = power > 0 ? dbLoudness(10 * Math.log10(power)) : 0;
+  } else {
+    loudness = gainLoudness(wSum / nBars);
+  }
+  const intensity = count ? intensityOf({ density: D, loudness, brightness, lowEnd: share((o) => o.lowEnd), percussive: share((o) => o.percussive), bpm: ctx.bpm }) : 0;
+
+  const pitchedRegisters = parts
+    .filter((p) => PITCHED_ROLES.has(p.scan.part.role as PartRole))
+    .map((p) => p.onsets.filter((o) => o.midi !== null).map((o) => o.midi!))
+    .filter((m) => m.length)
+    .map((m) => registerOf(median(m)));
+  const clash = new Set(pitchedRegisters).size < pitchedRegisters.length ? 0.1 : 0;
+  const density = clamp01(0.5 * clamp01(parts.length / 6) + 0.5 * D + clash);
+
+  const pitched = parts.flatMap((p) => (p.scan.part.chromatic ? [] : p.onsets.filter((o) => o.midi !== null)));
+  const fit = keyFitOf(pitched, ctx.scales);
+  const clusters: number[] = [];
+  for (let b = from; b < to; b++) {
+    const c = clusterScore(parts.flatMap((p) => p.onsets.filter((o) => o.bar === b && o.midi !== null).map((o) => pitchClass(o.midi!))));
+    if (c !== null) clusters.push(c);
+  }
+  const harmonic = clamp01(0.6 * (fit ? 1 - fit.fit : 0) + 0.4 * mean(clusters));
+
+  const syncWeights = parts.map((p) => {
+    const perBar: number[] = [];
+    for (let b = from; b < to; b++) {
+      const steps = p.onsets.filter((o) => o.bar === b).map((o) => stepOf(o.pos));
+      if (steps.length > 1) perBar.push(syncopation(steps));
+    }
+    return { sync: mean(perBar), w: p.onsets.reduce((a, o) => a + o.gain, 0) * p.scan.part.level };
+  });
+  const syncW = syncWeights.reduce((a, x) => a + x.w, 0);
+  const sync = syncW ? syncWeights.reduce((a, x) => a + x.sync * x.w, 0) / syncW : 0;
+  return { intensity, brightness, density, D, harmonic, sync };
+}
+
+// ─── Fingerprint ──────────────────────────────────────────────────────────────────────────────────
+
+const HARMONIC_ROLES: ReadonlySet<string> = new Set(['bass', 'chords', 'pad', 'arp']);
+
+function fingerprintOf(scans: Scan[], descriptors: MixAnalysis['descriptors'], ctx: { bars: number; bpm: number; scale: string | null }): SectionFingerprint {
+  const shares: Record<string, number> = {};
+  let total = 0;
+  const kick = new Array<number>(16).fill(0);
+  const backbeat = new Array<number>(16).fill(0);
+  const harmony: number[][] = Array.from({ length: ctx.bars }, () => []);
+  for (const s of scans) {
+    if (s.part.level <= 0 || s.failed) continue;
+    for (const o of s.onsets) {
+      if (!isMixOnset(o, ctx.bars)) continue;
+      const w = o.gain * s.part.level;
+      shares[o.sound] = (shares[o.sound] ?? 0) + w;
+      total += w;
+      const family = o.entry?.family ?? '';
+      if (family.endsWith('/kick') || (s.part.role === 'kick' && o.percussive)) kick[stepOf(o.pos)]! += w;
+      if (/\/(snare|clap|rim)$/.test(family) || (s.part.role === 'snare' && o.percussive)) backbeat[stepOf(o.pos)]! += w;
+      if (HARMONIC_ROLES.has(s.part.role) && o.midi !== null) harmony[o.bar]!.push(pitchClass(o.midi));
+    }
+  }
+  for (const k of Object.keys(shares)) shares[k] = round(total ? shares[k]! / total : 0);
+  return {
+    descriptors,
+    soundShares: shares,
+    kickGrid16: normalise(kick),
+    backbeatGrid16: normalise(backbeat),
+    scale: ctx.scale ?? '',
+    bpm: ctx.bpm,
+    chordHash: chordCycleHash(harmony),
+  };
+}
+
+// ─── Issues ───────────────────────────────────────────────────────────────────────────────────────
+
+function issue(rule: string, message: string, path: string, hint?: string, severity: Issue['severity'] = 'error'): Issue {
+  return hint ? { severity, rule, message, path, hint } : { severity, rule, message, path };
+}
+
+function limitHint(key: string, range: string): string {
+  if (key === 'pan') return 'jux()/juxBy() add ±0.5 to pan; keep .pan() within 0.25–0.75 when combined with them.';
+  return `Keep ${key} inside ${range}; the engine clamps it for listeners.`;
+}
+
+/** Hap-value limit violations in the first `bars` bars of a pattern (for knob extremes). */
+export function limitViolations(pattern: any, fromBar: number, bars: number, bpm: number): { key: string; value: unknown; range: string }[] {
+  const out = new Map<string, { key: string; value: unknown; range: string }>();
+  const haps = pattern.query(cycleState(fromBar, fromBar + bars, { _cps: bpmToCps(bpm) })) as any[];
+  for (const hap of haps) {
+    if (!hap.whole || !hap.hasOnset() || !hap.value || typeof hap.value !== 'object') continue;
+    for (const v of findLimitViolations(hap.value)) {
+      if (v.reason === 'range' && v.range && !out.has(v.key)) out.set(v.key, { key: v.key, value: v.value, range: `${v.range.min}–${v.range.max}` });
+    }
+  }
+  return [...out.values()];
+}
+
+function runtimeHint(message: string): string | undefined {
+  if (/Scale name .* is incomplete/.test(message)) return 'Write scales as tonic:mode, e.g. .scale("C:minor").';
+  if (/is not a function/.test(message)) return 'Check that every method follows a pattern and that functions are written like x => x.fast(2).';
+  if (/voicing|chord/i.test(message)) return 'Spell chords the Strudel way: "C^7 Dm7 G7 Am9" (^ for major seventh).';
+  return undefined;
+}
