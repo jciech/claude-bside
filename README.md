@@ -87,8 +87,12 @@ npm run catalog        # rebuild the sound catalog from pinned sample repositori
 | `BSIDE_MAX_PLANS_PER_HOUR` | 90 | Budget on Claude compose calls |
 | `BSIDE_ADMIN_TOKEN` | — | Guards the composer API (required in production) |
 | `BSIDE_TRUST_PROXY` | 0 | Reverse-proxy hops to trust for client addresses |
-| `BSIDE_DATA_DIR` | `./data` | Session and ledger persistence |
+| `BSIDE_AUTOPILOT` | — | `synth`: autopilot without sample downloads (offline, e2e) |
+| `BSIDE_DATA_DIR` | `./data` | Session, ledger and secret persistence |
 | `PORT` | 3000 | |
+
+The full list (logging, listen address, per-network limits, effort) is in
+[`docs/ARCHITECTURE.md` §16](docs/ARCHITECTURE.md#16-operating-it).
 
 The original proof of concept lives in `legacy/` for reference.
 

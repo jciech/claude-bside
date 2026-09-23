@@ -577,15 +577,26 @@ legacy/              the proof of concept, for reference
 | Env | Default | |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Enables the Claude driver |
-| `BSIDE_COMPOSER` | `claude` if a key is set, else `scripted` | Initial driver |
+| `BSIDE_COMPOSER` | `claude` if a key is set, else `scripted` | Initial driver (`claude` without a key falls back to `scripted`) |
 | `BSIDE_MODEL` | `claude-opus-5` | |
+| `BSIDE_EFFORT_SECTION` | `medium` | Effort for section turns (`low` · `medium` · `high`) |
+| `BSIDE_EFFORT_MOVEMENT` | `high` | Effort for movement turns (`medium` · `high` · `xhigh`) |
 | `BSIDE_MAX_PLANS_PER_HOUR` | 90 | Hard budget on compose calls |
-| `BSIDE_ADMIN_TOKEN` | — | Guards `/api/composer/*` (loopback-only in dev; disabled in production without it) |
-| `BSIDE_SECRET` | generated, persisted | HMAC key for listener tokens |
+| `BSIDE_MAX_API_CALLS_PER_PLAN` | 8 | API round trips (auditions + commits) one plan may take |
+| `BSIDE_AUTOPILOT` | — | `synth`: the autopilot uses only its synth ensembles (no sample downloads; offline rooms, e2e) |
+| `BSIDE_ADMIN_TOKEN` | — | Guards `/api/composer/*` (≥ 16 chars; loopback-only in dev without it; disabled in production without it) |
+| `BSIDE_SECRET` | generated into `$BSIDE_DATA_DIR/secret.key` (0600) | HMAC key for listener tokens (≥ 16 chars) |
 | `BSIDE_TRUST_PROXY` | 0 | Reverse-proxy hops to trust for client addresses |
+| `BSIDE_IPV6_PREFIX` | 48 | IPv6 prefix length treated as one network (per-network caps) |
+| `BSIDE_MAX_SOCKETS_PER_NETWORK` | 64 | Concurrent sockets per network |
+| `BSIDE_HOST` | `localhost` in dev, all interfaces in production | Listen address |
 | `PORT` | 3000 | |
-| `BSIDE_DATA_DIR` | `./data` | Session, ledger, identity (outside served roots) |
+| `BSIDE_DATA_DIR` | `./data` | Session, ledger, identity, secret (outside served roots) |
+| `BSIDE_CATALOG` | `palette/catalog.json` | Sound catalog |
 | `BSIDE_SOURCE_URL` | this repository | Shown in the UI (AGPL-3.0 §13) |
+| `BSIDE_LOG` | `info` | `debug` · `info` · `warn` · `error` · `silent` |
+| `BSIDE_LOG_FORMAT` | `pretty` on a terminal, else `json` | One JSON object per line, or human-readable |
+| `BSIDE_URL` | `http://localhost:3000` | Server the `bside` CLI talks to |
 
 Cost is roughly one Claude call per 1–2 sections (1–3 minutes of music); nothing is spent while the
 room is empty. Everything is AGPL-3.0-or-later, as Strudel is; a hosted room must offer its source,
