@@ -71,6 +71,8 @@ export interface CheckSectionInput {
   scale: string | null;
   /** Composed bars; the checker analyses bars + one vamp loop (≤ 72 bars). */
   bars: number;
+  /** The section's `vamp.loopBars`, which decides the score bars the vamp repeats; default min(8, bars). */
+  vampLoopBars?: 4 | 8;
 }
 
 export interface CheckOptions {

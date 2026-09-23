@@ -47,6 +47,11 @@ export interface SectionSummary {
   })[];
 }
 
+/** A provisional section a plan replaces, without code or knobs. */
+export type ReplacedSection = Pick<SectionSummary, 'id' | 'name' | 'role' | 'startCycle' | 'bars' | 'bpm' | 'scale' | 'chords'> & {
+  parts: Pick<PartDigest, 'id' | 'role' | 'instrument'>[];
+};
+
 export interface CrowdSummary {
   listeners: number;
   /** Aggregated pad in descriptor space (0..1) plus diagnostics. */
@@ -86,6 +91,8 @@ export interface TurnContext {
     startCycle: number;
     /** Provisional sections your plan replaces (their slot is yours). */
     replaces: string[];
+    /** What those sections would have played, in schedule order (they are not in `committed`). */
+    replacing: ReplacedSection[];
     /** The tail section is already looping its last phrase, waiting for you. */
     vamping: boolean;
     scheduleRev: number;
@@ -194,6 +201,11 @@ export interface AuditionPartResult {
 }
 
 export interface AuditionResult {
+  /** No section-level errors and every part ok. */
+  ok: boolean;
+  /** Section-level issues (path "mix", "scale" or none): mix density, an invalid scale, timeout, busy. */
+  errors: Issue[];
+  warnings: Issue[];
   parts: AuditionPartResult[];
   mix: MixAnalysis | null;
   descriptors: Descriptors | null;

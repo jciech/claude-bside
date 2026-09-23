@@ -214,6 +214,20 @@ describe('tempo map across revokes (design-review regressions)', () => {
     const req = room.external.requests.at(-1)!;
     expect(room.external.requests.length).toBeGreaterThan(pending);
     expect(req.request.context.request.replaces).toEqual([prov.id]);
+    expect(req.request.context.request.replacing).toEqual([
+      {
+        id: prov.id,
+        name: 'Prov',
+        role: 'interlude',
+        startCycle: prov.startCycle,
+        bars: 32,
+        bpm: 124,
+        scale: prov.scale,
+        chords: prov.chords,
+        parts: prov.parts.map((p) => ({ id: p.id, role: p.role, instrument: p.instrument })),
+      },
+    ]);
+    expect(req.request.context.committed.map((s) => s.id)).not.toContain(prov.id);
     expect(req.request.context.request.reasons).toContain('crowd-pressure');
     const revokesBefore = room.broadcaster.of('schedule').flatMap((u) => u.revokes);
     expect(revokesBefore).toEqual([]);
@@ -237,7 +251,7 @@ describe('turn context', () => {
     expect(JSON.parse(JSON.stringify(ctx))).toEqual(ctx);
     expect(JSON.stringify(ctx).length).toBeLessThan(12_000);
     expect(ctx.memory).toMatchObject({ lastRationale: 'Next: a build.', motifs: [{ id: 'hook', fromSectionId: 'ep1-0002' }] });
-    expect(ctx.request).toMatchObject({ replaces: [], vamping: false, scheduleRev: room.conductor.snapshot().rev });
+    expect(ctx.request).toMatchObject({ replaces: [], replacing: [], vamping: false, scheduleRev: room.conductor.snapshot().rev });
     expect(ctx.expected.length).toBeGreaterThanOrEqual(1);
     expect(ctx.rules.budget).toMatchObject({ peakSecAllowedNow: expect.any(Number), floorSecAllowedNow: expect.any(Number), lastRoles: expect.any(Array) });
     expect(ctx.novelty.crate).toHaveLength(16);

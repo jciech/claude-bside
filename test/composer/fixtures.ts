@@ -115,6 +115,7 @@ export function turnContext(o: ContextOptions = {}): TurnContext {
       sectionsWanted: o.sectionsWanted ?? 1,
       startCycle: start,
       replaces: [],
+      replacing: [],
       vamping: o.vamping ?? false,
       scheduleRev: 3,
     },

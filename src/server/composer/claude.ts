@@ -52,7 +52,8 @@ const AUDITION_DESCRIPTION =
   'Try parts before committing them. Each part is validated against the room\'s allowlist, evaluated, and analysed with the ' +
   'others over `bars` (default 16) at `bpm` in `scale`, all playing from bar 0. Returns per-part errors and warnings (with ' +
   'line, column, excerpt and a fix hint) and a digest (events per bar, register, syncopation, brightness, loudness, period, ' +
-  'key fit), plus the mix\'s measured descriptors. Use it for any new or uncertain code; it changes nothing in the room.';
+  'key fit), section-level errors and warnings (mix density, scale), and the mix\'s measured descriptors. Use it for any ' +
+  'new or uncertain code; it changes nothing in the room.';
 
 const COMMIT_DESCRIPTION =
   'Commit your Plan: the next 1–2 sections, plus a new movement, fork, request decisions and motifs when relevant. The ' +
@@ -107,6 +108,9 @@ const brief = (i: Issue) => ({
 /** Audition results without the heavy per-onset analysis (the digest carries what matters). */
 export function auditionReport(r: AuditionResult): string {
   return JSON.stringify({
+    ok: r.ok,
+    ...(r.errors.length ? { errors: r.errors.map(brief) } : {}),
+    ...(r.warnings.length ? { warnings: r.warnings.map(brief) } : {}),
     parts: r.parts.map((p) => ({ id: p.id, ok: p.ok, errors: p.errors.map(brief), warnings: p.warnings.map(brief), digest: p.digest })),
     mix: r.mix ? { descriptors: r.mix.descriptors, spans: r.mix.spans, onsetsPerBar: r.mix.onsetsPerBar, peakOverlapGain: r.mix.peakOverlapGain } : null,
   });

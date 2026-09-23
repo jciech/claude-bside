@@ -59,7 +59,7 @@ export function fakeConductor(now: () => number): FakeConductor {
     }),
     apiStatus: status,
     previewContext: () => ({ request: { id: 'preview' } }) as unknown as TurnContext,
-    audition: async (input) => ({ parts: input.parts.map((p) => ({ id: p.id, role: p.role, ok: true, errors: [], warnings: [], analysis: null, digest: null })), mix: null, descriptors: null }),
+    audition: async (input) => ({ ok: true, errors: [], warnings: [], parts: input.parts.map((p) => ({ id: p.id, role: p.role, ok: true, errors: [], warnings: [], analysis: null, digest: null })), mix: null, descriptors: null }),
     commit: async (body, author) => {
       conductor.commits.push({ body, author });
       return { accepted: true, errors: [], warnings: [], sections: [{ id: `${fixture.epoch}-0099`, name: body.plan.sections[0]!.name, startCycle: 64, bars: body.plan.sections[0]!.bars }] };

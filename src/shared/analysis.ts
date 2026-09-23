@@ -8,9 +8,16 @@ export type Severity = 'error' | 'warning';
 export interface Issue {
   severity: Severity;
   /**
-   * Machine-readable rule id, e.g. "syntax", "mini", "unknown-method", "denied", "unknown-sound",
-   * "limit", "density", "key-fit", "knob-undeclared", "constant-fx", "timeout", "busy", "stale-context",
-   * "request-closed", "cooldown", "similarity", "dramaturgy", "tempo", "lead-time", "schema".
+   * Machine-readable rule id. The ids emitted today, by stage:
+   * - validator: "syntax", "quotes", "mini", "unknown-method", "unknown-function", "unknown-identifier",
+   *   "unknown-key", "denied", "density", "size", "number", "knob", "knob-undeclared", "unused"
+   * - evaluation: "syntax", "mini", "denied", "not-pattern", "runtime", "timeout"
+   * - checker: "knob-unused", "knob-range", "timeout", "busy", "resource", "internal"
+   * - analyser: "scale", "silent", "density", "limit", "value", "key-fit", "constant-fx", "unknown-sound",
+   *   "denied", "sound-range", "sample-index", "n-without-scale", "arith-on-control", "runtime", "strudel"
+   * - conductor: "schema", "carry", "knob-undeclared", "request", "fork", "text", "tempo", "targets",
+   *   "register", "plan-length", "cooldown", "similarity", "crate", "palette", "stasis", "dramaturgy",
+   *   "reprise", "lead-time", "stale-context", "request-closed", "timeout", "internal"
    */
   rule: string;
   message: string;

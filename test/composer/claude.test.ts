@@ -3,7 +3,7 @@
 import { APIUserAbortError, AuthenticationError, BadRequestError, RateLimitError } from '@anthropic-ai/sdk';
 import type { BetaContentBlock, BetaMessage, BetaMessageStreamParams, BetaToolResultBlockParam } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { describe, expect, it } from 'vitest';
-import { createClaudeComposer, type AnthropicLike } from '../../src/server/composer/claude.ts';
+import { auditionReport, createClaudeComposer, type AnthropicLike } from '../../src/server/composer/claude.ts';
 import type { AuditionInput, AuditionResult, CommitResult, PlanRequest } from '../../src/shared/composer-api.ts';
 import type { Plan } from '../../src/shared/plan.ts';
 import type { ComposerTools, ServerConfig } from '../../src/server/types.ts';
@@ -95,6 +95,9 @@ const plan: Plan = {
 
 const audition: AuditionInput = { parts: [{ id: 'kick', role: 'kick', code: 's("sbd*4")', knobs: [], chromatic: false }], bpm: 120, scale: null, bars: null };
 const auditionResult: AuditionResult = {
+  ok: true,
+  errors: [],
+  warnings: [],
   parts: [{ id: 'kick', role: 'kick', ok: true, errors: [], warnings: [], analysis: null, digest: { id: 'kick', role: 'kick', instrument: 'Synth kick', evPerBar: 4, register: null, sync: 0, bright: 0.2, loud: 0.7, period: 1, keyFit: null } }],
   mix: null,
   descriptors: null,
@@ -193,9 +196,17 @@ describe('the Claude driver', () => {
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ cache_control: { type: 'ephemeral' } });
     expect(results[0]).not.toHaveProperty('is_error');
-    expect(JSON.parse(results[0]!.content as string)).toMatchObject({ parts: [{ id: 'kick', ok: true, digest: { instrument: 'Synth kick' } }] });
+    expect(JSON.parse(results[0]!.content as string)).toMatchObject({ ok: true, parts: [{ id: 'kick', ok: true, digest: { instrument: 'Synth kick' } }] });
+    expect(JSON.parse(results[0]!.content as string)).not.toHaveProperty('errors');
     expect(JSON.stringify(second.messages[0])).not.toContain('cache_control');
     expect(t.log.lines.find((l) => l.msg === 'claude: compose finished')?.data).toMatchObject({ status: 'committed', calls: 2 });
+  });
+
+  it('reports section-level audition issues, and an audition that fails only there as not ok', () => {
+    const scale = { severity: 'error' as const, rule: 'scale', message: 'Unknown scale "D:dorain".', path: 'scale', hint: 'Did you mean "D:dorian"?' };
+    const report = JSON.parse(auditionReport({ ...auditionResult, ok: false, errors: [scale] }));
+    expect(report).toMatchObject({ ok: false, errors: [{ rule: 'scale', path: 'scale', hint: 'Did you mean "D:dorian"?' }], parts: [{ id: 'kick', ok: true, errors: [] }] });
+    expect(report.errors[0]).not.toHaveProperty('severity');
   });
 
   it('asks Claude to repair a rejected commit, with every issue, and succeeds on the second try', async () => {

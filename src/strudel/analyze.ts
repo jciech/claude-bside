@@ -8,7 +8,8 @@ import type { CatalogSound } from '../shared/catalog.ts';
 import { BLOCKED_SOUNDS } from '../shared/catalog.ts';
 import { HAP_LIMITS, MAX_MIX_ONSETS_PER_BAR, MAX_PART_ONSETS_PER_BAR, findLimitViolations } from '../shared/limits.ts';
 import { PERCUSSIVE_ROLES, PITCHED_ROLES, bpmToCps, secondsPerBar, type PartRole } from '../shared/music.ts';
-import type { CheckPartInput } from '../server/types.ts';
+import { vampLoopBars } from '../shared/schedule.ts';
+import type { CheckPartInput, CheckSectionInput } from '../server/types.ts';
 import { resolvedName, suggestSounds, type SoundIndex } from './catalog.ts';
 import {
   chordCycleHash, clamp01, clusterScore, dbLoudness, densityScore, gainLoudness, intensityOf, lcm, mean, median, midiName,
@@ -22,6 +23,7 @@ export interface AnalyzeSectionInput {
   bpm: number;
   scale: string | null;
   bars: number;
+  vampLoopBars?: CheckSectionInput['vampLoopBars'];
   index: SoundIndex;
 }
 
@@ -43,7 +45,7 @@ export interface SectionAnalysis {
   warnings: Issue[];
 }
 
-/** The vamp loops at most this many bars; the checker analyses one loop past the score. */
+/** The vamp loops at most this many bars; the checker analyses this many bars past the score. */
 export const VAMP_BARS = 8;
 export const MAX_ANALYSED_BARS = 72;
 const RANDOM_PROBE_BARS = 8;
@@ -94,7 +96,7 @@ interface Scan {
 export function analyzeSection(input: AnalyzeSectionInput, hooks: { onPart?(id: string): void } = {}): SectionAnalysis {
   const bars = Math.max(1, Math.round(input.bars));
   const analysedBars = Math.min(MAX_ANALYSED_BARS, bars + Math.min(VAMP_BARS, bars));
-  const loopBars = Math.min(VAMP_BARS, bars);
+  const loopBars = input.vampLoopBars ? vampLoopBars({ bars, vamp: { allowed: true, loopBars: input.vampLoopBars } }) : Math.min(VAMP_BARS, bars);
   const cps = bpmToCps(input.bpm);
   const sectionErrors: Issue[] = [];
   const sectionWarnings: Issue[] = [];

@@ -39,7 +39,7 @@ describe('the Strudel reference card', () => {
 
   it('states the verified caveats', () => {
     const card = strudelCard();
-    for (const fact of ['1 cycle = 1 bar', 'NOT directly inside', '"C:minor"', '^7', 'SILENT', 'loopAt', 'OCTAVES', 'knob("cut")', '.seed(n)', 'REPLACES', 'CONSTANT', 'setcps', '0.5 is centre']) {
+    for (const fact of ['1 cycle = 1 bar', 'NOT directly inside', '"C:minor"', '^7', 'SILENT', 'loopAt', 'OCTAVES', 'knob("cut")', 'BEFORE knob-controlled methods', '.seed(n)', 'REPLACES', 'CONSTANT', 'setcps', '0.5 is centre']) {
       expect(card, fact).toContain(fact);
     }
   });
@@ -106,5 +106,8 @@ describe('renderTurn', () => {
     expect(task).toContain('Decide every request');
     expect(task).toContain('commit_plan');
     expect(renderTurn(turnContext())).toContain('(none)');
+    const replacing = turnContext();
+    replacing.request.replaces = ['ep1-0042'];
+    expect(renderTurn(replacing)).toContain('replaces the provisional section(s) ep1-0042; they are not in `committed` (`request.replacing` shows what they held).');
   });
 });
