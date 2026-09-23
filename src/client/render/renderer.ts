@@ -90,6 +90,7 @@ export function createRenderer(emit: (message: FromRenderer) => void, options: R
     if (m.type === 'init') {
       tier = m.tier;
       lathe = new Lathe(m.canvas, m.width, m.height, m.dpr, m.tier);
+      lathe.setPrefs({ contrastMore: m.contrastMore });
       void loadRimFont().then((loaded) => {
         if (loaded) lathe?.refreshLabel();
       });
@@ -105,6 +106,9 @@ export function createRenderer(emit: (message: FromRenderer) => void, options: R
       case 'tier':
         tier = m.tier;
         lathe.setTier(m.tier);
+        break;
+      case 'prefs':
+        lathe.setPrefs({ contrastMore: m.contrastMore });
         break;
       case 'pause':
         paused = m.paused;

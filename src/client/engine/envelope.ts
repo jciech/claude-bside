@@ -1,10 +1,11 @@
 // What each engine channel does at a given cycle, as pure functions: level × automation ×
 // transition envelope × intensity macro × trims, and the transition filters. The channel planner
 // samples these on a grid and schedules AudioParam ramps at each point's audio time, so every
-// client produces the same curves (src/client/engine/types.ts, "Level").
+// client produces the same curves (src/client/engine/types.ts, "Level"). Also the fader and knob
+// values an instance plays with at a cycle (Engine.levelAt / knobValues).
 import { scoreBarAt } from '../../shared/schedule.ts';
 import type { MixerState } from '../../shared/program.ts';
-import { dbToGain, intensityDb, levelAt, macrosAt, trimDbAt } from './knobs.ts';
+import { dbToGain, intensityDb, knobAt, levelAt, macrosAt, trimDbAt } from './knobs.ts';
 import type { InstanceSpec } from './score.ts';
 import { inWindowAt, lastExitBefore } from './window.ts';
 
@@ -15,10 +16,25 @@ const CLOSED_LOWPASS_HZ = 180;
 const CLOSED_HIGHPASS_HZ = 2500;
 const EPS = 1e-6;
 
+const scoreBarOf = (inst: InstanceSpec, c: number): number => scoreBarAt(inst.section, c - inst.section.startCycle);
+
+/** The instance's fader at `c`: its level lane at that score bar, before transitions, macros and trims. */
+export function instanceLevelAt(inst: InstanceSpec, c: number): number {
+  return levelAt(inst.part, scoreBarOf(inst, c));
+}
+
+/** The instance's knob values at `c`: lanes, carried values and the room's follow offsets. */
+export function instanceKnobsAt(inst: InstanceSpec, c: number, mixer: MixerState): Record<string, number> {
+  const bar = scoreBarOf(inst, c);
+  const macros = macrosAt(mixer, c);
+  const out: Record<string, number> = {};
+  for (const knob of inst.part.knobs) out[knob.name] = knobAt(inst.part, knob, bar, inst.inherited?.[knob.name], macros);
+  return out;
+}
+
 /** Gain while in-window, before the release that follows an exit. */
 function soundingGain(inst: InstanceSpec, c: number, mixer: MixerState): number {
-  const bar = scoreBarAt(inst.section, c - inst.section.startCycle);
-  let g = levelAt(inst.part, bar);
+  let g = instanceLevelAt(inst, c);
   if (inst.fadeIn && c < inst.fadeIn.at + inst.fadeIn.bars) g *= Math.sin((Math.PI / 2) * unit(c, inst.fadeIn.at, inst.fadeIn.bars));
   if (inst.fadeOut && c >= inst.fadeOut.at) g *= Math.cos((Math.PI / 2) * unit(c, inst.fadeOut.at, inst.fadeOut.bars));
   const db = intensityDb(inst.part.role, macrosAt(mixer, c).intensity) + trimDbAt(mixer, inst.part.id, c);

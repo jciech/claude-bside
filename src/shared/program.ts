@@ -120,7 +120,13 @@ export interface MixerState {
   rev: number;
   prev: MixerKeyframe | null;
   next: MixerKeyframe;
-  /** Temporary safety trim after a "harsh" consensus. */
+  /**
+   * Temporary safety trim after a "harsh" consensus: `masterDb` on the master trim, `highShelfDb` on
+   * the master high shelf. The performer ramps both (in dB, linearly) from 0 over the bar after
+   * fromCycle and back to 0 over the bar before untilCycle (a span under 2 bars peaks at its
+   * midpoint), so the trim is already off at untilCycle and the server's `safety: null` from then on
+   * never causes a jump.
+   */
   safety: { masterDb: number; highShelfDb: number; fromCycle: number; untilCycle: number } | null;
 }
 

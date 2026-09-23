@@ -8,12 +8,12 @@ import type { MovementInfo } from '../../shared/program.ts';
 import type { PadPoint } from '../../shared/protocol.ts';
 import type { Engine } from '../engine/types.ts';
 import { epochNow } from './clock.ts';
-import { EngineFeed, type LabelState } from './feed.ts';
-import type { CreateLathe, FromRenderer, LatheHost, RenderTier, SideSection, ToRenderer } from './protocol.ts';
+import { EngineFeed } from './feed.ts';
+import type { CreateLathe, FromRenderer, LabelState, LatheHost, LatheOptions, RenderPrefs, RenderTier, SideSection, ToRenderer } from './protocol.ts';
 import { createRenderer, type Renderer } from './renderer.ts';
 import { resolveTier, TierGovernor, type ResolvedTier } from './tiers.ts';
 
-export type { LabelState } from './feed.ts';
+export type { LabelState } from './protocol.ts';
 
 type Stats = { p95FrameMs: number; fps: number };
 type Etch = { type: EtchType; cycle: number; hue: number };
@@ -32,6 +32,7 @@ class Host implements LatheHost {
   private feed: EngineFeed;
   private readonly governor = new TierGovernor(performance.now());
   private userTier: RenderTier;
+  private prefs: RenderPrefs;
   private resolved: ResolvedTier;
   private size: { width: number; height: number; dpr: number };
   private userPaused = false;
@@ -48,10 +49,11 @@ class Host implements LatheHost {
   private label: LabelState = { inverted: false, listening: false };
   private readonly cleanups: (() => void)[] = [];
 
-  constructor(canvas: HTMLCanvasElement, engine: Engine, options: { tier: RenderTier; useWorker: boolean }) {
+  constructor(canvas: HTMLCanvasElement, engine: Engine, options: LatheOptions) {
     this.canvas = canvas;
     this.engine = engine;
     this.userTier = options.tier;
+    this.prefs = { contrastMore: options.prefs?.contrastMore ?? false };
     this.size = {
       width: canvas.clientWidth || canvas.width,
       height: canvas.clientHeight || canvas.height,
@@ -77,6 +79,12 @@ class Host implements LatheHost {
     this.applyTier(true);
   }
 
+  setPrefs(prefs: RenderPrefs): void {
+    if (prefs.contrastMore === this.prefs.contrastMore) return;
+    this.prefs = { contrastMore: prefs.contrastMore };
+    this.post({ type: 'prefs', contrastMore: prefs.contrastMore });
+  }
+
   pause(paused: boolean): void {
     this.userPaused = paused;
     this.syncPause();
@@ -99,7 +107,6 @@ class Host implements LatheHost {
   }
 
   on(event: 'stats', listener: (s: Stats) => void): () => void;
-  /** The DOM label over the record: invert for the bar after a drop, "— listening —" in silence. */
   on(event: 'label', listener: (s: LabelState) => void): () => void;
   on(event: 'stats' | 'label', listener: ((s: Stats) => void) | ((s: LabelState) => void)): () => void {
     if (event === 'stats') {
@@ -132,7 +139,7 @@ class Host implements LatheHost {
   }
 
   private initMessage(canvas: OffscreenCanvas | HTMLCanvasElement): ToRenderer {
-    return { type: 'init', canvas, width: this.size.width, height: this.size.height, dpr: this.dpr(), tier: this.resolved.tier };
+    return { type: 'init', canvas, width: this.size.width, height: this.size.height, dpr: this.dpr(), tier: this.resolved.tier, contrastMore: this.prefs.contrastMore };
   }
 
   private startWorker(): boolean {
@@ -292,5 +299,4 @@ class Host implements LatheHost {
   }
 }
 
-export const createLathe = ((canvas: HTMLCanvasElement, engine: Engine, options: { tier: RenderTier; useWorker: boolean }) =>
-  new Host(canvas, engine, options)) satisfies CreateLathe;
+export const createLathe: CreateLathe = (canvas, engine, options) => new Host(canvas, engine, options);

@@ -5,19 +5,13 @@
 // the DOM label (drop inversion, "— listening —") for the UI.
 import type { Engine, VisualEvent } from '../engine/types.ts';
 import type { MovementInfo, SectionProgram } from '../../shared/program.ts';
-import type { ClockSample, ToRenderer } from './protocol.ts';
+import type { ClockSample, LabelState, ToRenderer } from './protocol.ts';
 import { FlashLimiter } from './flash.ts';
 import { BUILD_LOOKAHEAD_BARS, DROP_INVERT_BARS, LOOKAHEAD_BARS, sectionMoments, type MomentKind } from './moments.ts';
 
-export type FeedEngine = Pick<Engine, 'state' | 'now' | 'cps' | 'query' | 'sections' | 'sectionAt' | 'meters' | 'on'>;
+export type { LabelState } from './protocol.ts';
 
-/** What the DOM label over the record should show (it lives outside the canvas). */
-export interface LabelState {
-  /** Clay-on-ink for the bar after a drop. */
-  inverted: boolean;
-  /** Nothing is sounding: the label reads "— listening —". */
-  listening: boolean;
-}
+export type FeedEngine = Pick<Engine, 'state' | 'now' | 'cps' | 'query' | 'sections' | 'sectionAt' | 'meters' | 'on'>;
 
 export interface FeedTimers {
   setInterval(fn: () => void, ms: number): unknown;

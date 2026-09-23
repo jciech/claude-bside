@@ -20,7 +20,10 @@
 //    automation × transition envelope × intensity macro × trims are scheduled on the channel as
 //    AudioParam ramps at the audio time of each cycle — sample-accurate and identical on every
 //    client. Per-hap values stay the model's own. Knob values are bound as
-//    signal(t => knobAt(part, name, scoreBar(t))) so every client computes the same numbers.
+//    signal(t => knobAt(part, name, scoreBar(t))) so every client computes the same numbers. The
+//    signal is sampled at each hap's onset in the time frame where knob() is applied, so time
+//    transforms written after it stretch its automation too: in `.lpf(knob("cut")).slow(2)` the
+//    lane plays at half speed (the hap at score bar 8 gets bar 4's value).
 //  • Brightness macro (per hap at its onset cycle): cutoff × 2^(1.0·mb), hcutoff × 2^(0.5·mb),
 //    room/delay sends × (1 − 0.3·mb); plus the master tilt EQ. Intensity macro on channels:
 //    percussive roles ±3 dB, pad/texture ∓2 dB.
@@ -28,9 +31,13 @@
 //    high-pass sweep 200→8000 Hz → gain ≈ −18 dBFS) into the master bus before the limiter. A
 //    transition window that began before the section arrived is skipped, never joined part-way.
 //  • Vamp: past its score a section loops its last phrase (vamp.loopBars) if vamp.allowed.
-//  • Guard: a part whose query throws, yields > MAX_PART_HAPS_PER_TICK haps in a tick, or whose
-//    query time EMA exceeds 4 ms is muted until the section ends and emits partError. At most
-//    MAX_HAPS_PER_TICK haps per tick overall (drop in reverse role priority: texture first, kick last).
+//  • Guard: a part whose query throws, yields > MAX_PART_HAPS_PER_TICK haps in a tick, whose query
+//    time EMA exceeds 4 ms, or that has more than MAX_PART_ONSETS_PLAYED_PER_BAR
+//    (2 × MAX_PART_ONSETS_PER_BAR) onsets within one bar is muted until the section ends and emits
+//    partError. The tick and time rules depend on the client's timing; the per-bar count is the
+//    deterministic backstop (the bar's first MAX_PART_ONSETS_PLAYED_PER_BAR onsets play, then the
+//    part is muted). At most MAX_HAPS_PER_TICK haps per tick overall (drop in reverse role
+//    priority: texture first, kick last).
 //  • Scheduler: queries are split at tempo-segment boundaries (controls {_cps, cyclist:'synced'});
 //    durations use msAtCycle; superdough's async errors are caught per hap → partError.
 //  • Master: orbit sum → safety/tilt EQ → master trim → limiter (DynamicsCompressor) → soft clip →
@@ -73,6 +80,7 @@ export type EngineState =
 
 export interface PartError {
   sectionId: string;
+  /** '' for the section-level codes: 'late-schedule', and 'clip' (reported only in telemetry()). */
   partId: string;
   code: TelemetryErrorCode;
   message: string;
@@ -171,7 +179,24 @@ export interface Engine {
   sectionAt(cycle: number): SectionProgram | null;
   sections(): SectionProgram[];
   preloadProgress(): { loaded: number; total: number };
+  /**
+   * Levels right now. Part levels are smoothed over audio time, not per call (an EMA whose
+   * coefficient comes from the audio time elapsed since the previous reading, τ = METER_TAU_SEC in
+   * meters.ts): any number of pollers at any rate see the same curve, and calls at the same audio
+   * time return the cached reading. Silent while output is stopped.
+   */
   meters(): Meters;
+  /**
+   * The knob values an instance (`${sectionId}:${partId}`) plays with at `cycle`: automation lanes,
+   * carried values and the room's follow offsets, clamped to each knob's range. {} when the engine
+   * does not know the instance.
+   */
+  knobValues(instance: string, cycle: number): Record<string, number>;
+  /**
+   * An instance's fader at `cycle`: its level lane at that score bar (before transitions, macros and
+   * trims). 0 when the engine does not know the instance.
+   */
+  levelAt(instance: string, cycle: number): number;
   /** Listener-local volume 0..1 (not shared). */
   setVolume(volume: number): void;
   /** Listener-local personal mix: mute a part id (all its instances). Never affects others. */

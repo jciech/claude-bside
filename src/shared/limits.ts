@@ -100,6 +100,8 @@ export const MAX_MIX_ONSETS_PER_BAR = 192;
 /** Performer backstops: haps per part per scheduler tick, and per tick overall. */
 export const MAX_PART_HAPS_PER_TICK = 64;
 export const MAX_HAPS_PER_TICK = 256;
+/** Performer backstop that does not depend on client timing: onsets of one part within one bar. */
+export const MAX_PART_ONSETS_PLAYED_PER_BAR = 2 * MAX_PART_ONSETS_PER_BAR;
 /** Density-multiplying arguments (fast, ply, `*n`, segment, chop…) must be constants ≤ this. */
 export const MAX_DENSITY_FACTOR = 16;
 

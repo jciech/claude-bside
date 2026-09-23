@@ -5,7 +5,7 @@
   import { parseCatalog } from '../../../strudel/catalog.ts';
   import { useRoom } from '../context.ts';
   import { bpmOf, sideLetter } from '../format.ts';
-  import { mapsForSounds, strudelProgram, strudelUrl } from '../export.ts';
+  import { mapsForSounds, soundingParts, strudelProgram, strudelUrl } from '../export.ts';
   import { audibleInstances, nowPlaying, partState } from '../now.ts';
   import { sectionAtCycle } from '../stores.ts';
   import PartRow from './PartRow.svelte';
@@ -143,7 +143,7 @@
       side: sideLetter(np.movement?.side ?? 1),
       track: s.track,
       bpm: bpmOf(engine.cps()),
-      parts: s.parts.map((p) => ({ id: p.id, code: p.code, level: p.level, knobs: p.knobs })),
+      parts: soundingParts(engine, s, engine.now()),
       maps,
       sourceUrl: $sourceUrl,
     });

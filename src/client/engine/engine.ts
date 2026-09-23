@@ -10,7 +10,9 @@ import type { Catalog } from '../../shared/catalog.ts';
 import type { Telemetry } from '../../shared/protocol.ts';
 import { audioContext, bindStrudelTime, initAudioGraph, resumeInGesture } from './boot.ts';
 import { ChannelBank } from './channels.ts';
+import { instanceKnobsAt, instanceLevelAt } from './envelope.ts';
 import { MASTER_DELAY_SEC, MasterChain } from './master.ts';
+import { loudness, MeterSmoother, silentMeters } from './meters.ts';
 import { Performer, toVisualEvent, type PlannedHap } from './performer.ts';
 import { Preloader, resolveAsset } from './preload.ts';
 import { RiserVoice } from './riser.ts';
@@ -112,7 +114,7 @@ class PerformerEngine implements Engine {
   private lastAnnounced: number | null = null;
   private recent: { event: VisualEvent; end: number }[] = [];
   private activeCache: { at: number; value: Map<string, { start: number; end: number }[]> } | null = null;
-  private partLevels: Record<string, number> = {};
+  private readonly meterSmoother = new MeterSmoother();
   private lastHealthAt = 0;
   private lastSampleAt = 0;
 
@@ -315,20 +317,28 @@ class PerformerEngine implements Engine {
   }
 
   meters(): Meters {
-    const parts: Record<string, number> = {};
-    if (!this.master || !this.channels || !this.scheduler?.running) return { master: { rmsDb: -120, peakDb: -120 }, parts };
-    const now = this.now();
-    const score = this.scoreAt(now);
-    for (const [orbit, rms] of this.channels.levels()) {
-      const owner = ChannelBank.ownerAt(score, orbit, now);
-      if (!owner) continue;
-      const db = rms > 0 ? 20 * Math.log10(rms) : -120;
-      const level = Math.min(1, Math.max(0, (db + 60) / 60));
-      const prev = this.partLevels[owner.key] ?? 0;
-      parts[owner.key] = prev + 0.35 * (level - prev);
-    }
-    this.partLevels = parts;
-    return { master: this.master.meters(), parts };
+    const { master, channels } = this;
+    if (!master || !channels || !this.scheduler?.running) return silentMeters();
+    return this.meterSmoother.read(audioContext().currentTime, () => {
+      const now = this.now();
+      const score = this.scoreAt(now);
+      const parts: Record<string, number> = {};
+      for (const [orbit, rms] of channels.levels()) {
+        const owner = ChannelBank.ownerAt(score, orbit, now);
+        if (owner) parts[owner.key] = loudness(rms);
+      }
+      return { master: master.meters(), parts };
+    });
+  }
+
+  knobValues(instance: string, cycle: number): Record<string, number> {
+    const inst = this.scoreAt(cycle).byKey.get(instance);
+    return inst ? instanceKnobsAt(inst, cycle, this.mixer) : {};
+  }
+
+  levelAt(instance: string, cycle: number): number {
+    const inst = this.scoreAt(cycle).byKey.get(instance);
+    return inst ? instanceLevelAt(inst, cycle) : 0;
   }
 
   setVolume(volume: number): void {

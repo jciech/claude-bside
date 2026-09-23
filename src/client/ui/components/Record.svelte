@@ -4,28 +4,29 @@
   import { plannedPlayBars } from '../../../shared/schedule.ts';
   import type { EtchType } from '../../../shared/music.ts';
   import { createLathe } from '../../render/host.ts';
-  import type { SideSection } from '../../render/protocol.ts';
+  import type { LatheHost, SideSection } from '../../render/protocol.ts';
   import { useRoom } from '../context.ts';
-  import { sideLetter } from '../format.ts';
+  import { composerByline, sideLetter } from '../format.ts';
+  import { mediaQuery } from '../media.ts';
   import { nowPlaying } from '../now.ts';
 
   let { entered }: { entered: boolean } = $props();
   const { room, calm, settings, pulse } = useRoom();
   const { engine, clock, stores } = room;
-  const { schedule, crowd, etches: myEtches } = stores;
+  const { schedule, crowd, composer, etches: myEtches } = stores;
   const bar = pulse.bar;
-
-  type Host = ReturnType<typeof createLathe>;
+  const contrastMore = mediaQuery('(prefers-contrast: more)');
 
   let box = $state<HTMLDivElement>();
   let canvas = $state<HTMLCanvasElement>();
-  let host = $state.raw<Host | null>(null);
+  let host = $state.raw<LatheHost | null>(null);
   let drawn = $state(false);
   let size = $state({ w: 0, h: 0 });
   let label = $state({ inverted: false, listening: false });
 
   const np = $derived(nowPlaying($schedule, Number.isFinite($bar) ? $bar : 0));
   const side = $derived(np.movement ? sideLetter(np.movement.side) : 'A');
+  const byline = $derived(composerByline($composer?.driver ?? 'claude'));
   // The label is 0.30 R and R = 0.93 · min(w, h) / 2 (docs/DESIGN.md "The Lathe").
   const labelSize = $derived(Math.round(0.279 * Math.min(size.w, size.h)));
   // Titles are the composer's (≤ 40 chars): shrink long ones so they fit inside the label's rings.
@@ -50,7 +51,7 @@
       if (cancelled || !canvas || !box) return;
       const rect = box.getBoundingClientRect();
       try {
-        const h = createLathe(canvas, engine, { tier: $calm ? 'calm' : 'full', useWorker: true });
+        const h = createLathe(canvas, engine, { tier: $calm ? 'calm' : 'full', useWorker: true, prefs: { contrastMore: $contrastMore } });
         h.resize(rect.width, rect.height, devicePixelRatio || 1);
         offs = [
           h.on('label', (s) => (label = s)),
@@ -72,6 +73,7 @@
   });
 
   $effect(() => host?.setTier($calm ? 'calm' : 'full'));
+  $effect(() => host?.setPrefs({ contrastMore: $contrastMore }));
   $effect(() => host?.pause($settings.pauseVisuals));
 
   // The side as the lathe lays it out: this movement's played tracks plus its committed ones.
@@ -122,7 +124,7 @@
           {#key np.section.id}
             <span class="label-title" style:--title-size="{titleSize.toFixed(2)}cqw" in:wipe={{ calm: $calm }}>{np.section.name}</span>
           {/key}
-          <span class="label-by">Claude · live</span>
+          <span class="label-by">{byline}</span>
         {/if}
       </div>
     </div>

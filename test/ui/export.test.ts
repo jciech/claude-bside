@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { hash2code } from '@strudel/core';
-import { bakeKnobs, mapsForSounds, sampleLines, strudelProgram, strudelUrl, STRUDEL_URL } from '../../src/client/ui/export.ts';
+import { bakeKnobs, mapsForSounds, sampleLines, soundingParts, strudelProgram, strudelUrl, STRUDEL_URL } from '../../src/client/ui/export.ts';
 import type { Catalog } from '../../src/shared/catalog.ts';
+import type { SectionProgram } from '../../src/shared/program.ts';
 import { parseCatalog } from '../../src/strudel/catalog.ts';
 import { validatePart } from '../../src/strudel/validate.ts';
 import { snapshot } from '../engine/fixtures.ts';
@@ -15,6 +16,24 @@ describe('export to strudel.cc', () => {
     expect(bakeKnobs('.lpf(knob("cut"))', knobs)).toBe('.lpf(800)');
     expect(bakeKnobs(".lpf(knob('cut'))", [{ ...knobs[0]!, default: 1234.56789 }])).toBe('.lpf(1234.5679)');
     expect(bakeKnobs('.lpf(knob("other"))', knobs)).toBe('.lpf(knob("other"))');
+    expect(bakeKnobs('.lpf(knob("cut"))', knobs, { cut: 1525 })).toBe('.lpf(1525)');
+  });
+
+  it('exports the knob values and faders sounding now, or the declared ones for a section the engine does not know', () => {
+    const [first, second] = snapshot.sections as [SectionProgram, SectionProgram];
+    const engine = {
+      sections: () => [first],
+      knobValues: (instance: string, cycle: number): Record<string, number> => (instance === `${first.id}:bass` && cycle === 12 ? { cut: 692.8 } : {}),
+      levelAt: (instance: string) => (instance === `${first.id}:pad` ? 0.25 : 0.5),
+    };
+    const parts = soundingParts(engine, first, 12);
+    expect(parts.find((p) => p.id === 'bass')).toMatchObject({ level: 0.5, knobValues: { cut: 692.8 } });
+    expect(parts.find((p) => p.id === 'pad')!.level).toBe(0.25);
+    const program = strudelProgram({ title: 'x', side: 'A', track: 1, bpm: 120, parts, maps: [], sourceUrl: '' });
+    expect(program).toContain('.lpf(692.8)');
+    expect(program).toContain('.postgain(0.25)');
+    const unknown = soundingParts(engine, second, 20);
+    expect(unknown.map((p) => [p.id, p.level, p.knobValues])).toEqual(second.parts.map((p) => [p.id, p.level, undefined]));
   });
 
   it('adds samples() only for maps strudel.cc does not preload, pinned to the commit', () => {

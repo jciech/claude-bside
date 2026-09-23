@@ -27,7 +27,7 @@ import {
   laneOffset,
 } from './geometry.ts';
 import { applyMoment, DROP_INVERT_BARS, INITIAL_MOOD, lookAt, type Look, type MomentKind, type Mood } from './moments.ts';
-import type { RenderTier, SideSection } from './protocol.ts';
+import type { RenderPrefs, RenderTier, SideSection } from './protocol.ts';
 import { familySprites, glowSprite } from './sprites.ts';
 import { context2d, makeCanvas, RIM_FONT, type AnyCanvas, type Ctx2D } from './surface.ts';
 import { BLOOM_SIZE, GHOST_SIZE, INK, rgba, SUSTAINED_FAMILIES, VOICE_COLOR } from './tokens.ts';
@@ -138,6 +138,7 @@ export class Lathe {
   private readonly canvas: AnyCanvas;
   private readonly ctx: Ctx2D;
   private tier: RenderTier;
+  private prefs: RenderPrefs = { contrastMore: false };
   private dpr = 1;
   private L!: Layout;
   private side: Side;
@@ -208,6 +209,10 @@ export class Lathe {
       this.sprites = familySprites(this.spriteSize());
       this.rebuildArchive();
     }
+  }
+
+  setPrefs(prefs: RenderPrefs): void {
+    this.prefs = { ...prefs };
   }
 
   /** Re-renders what depends on the rim font once it has loaded. */
@@ -749,7 +754,7 @@ export class Lathe {
     g.restore();
 
     if (!calm && look.shockwave !== null) this.drawShockwave(look.shockwave);
-    this.drawSheen();
+    if (!this.prefs.contrastMore) this.drawSheen();
     this.drawStylus(cycle, thump, calm);
   }
 

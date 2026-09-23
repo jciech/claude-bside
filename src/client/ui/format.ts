@@ -152,6 +152,13 @@ export function composerLine(c: ComposerStatus, serverNowMs: number): string {
   return `${who} is listening`;
 }
 
+const BYLINE: Record<ComposerStatus['driver'], string> = { claude: 'Claude · live', external: 'Guest composer · live', scripted: 'Autopilot · live' };
+
+/** The record label's byline: who is cutting the record. */
+export function composerByline(driver: ComposerStatus['driver']): string {
+  return BYLINE[driver];
+}
+
 function degree(v: number): string {
   const a = Math.abs(v);
   if (a < 0.08) return '';
