@@ -1,7 +1,10 @@
-// The bside CLI: argument parsing, and every command against a fake composer API over real HTTP
-// (auth header, request bodies, human and JSON output, exit codes, SSE).
+// The bside CLI: argument parsing, every command against a fake composer API over real HTTP (auth
+// header, request bodies, human and JSON output, exit codes, SSE), and Ctrl-C on the real process.
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parseArgs, UsageError } from '../../src/cli/args.ts';
 import { main, type Io } from '../../src/cli/bside.ts';
@@ -313,5 +316,53 @@ describe('bside against the composer API', () => {
     const u = io();
     expect(await main(['frobnicate'], u.io)).toBe(2);
     expect(u.errors()).toMatch(/unknown command "frobnicate"/);
+  });
+});
+
+describe('Ctrl-C on the bside process', () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+
+  /** Runs `bside <args>` against a server that answers with `handle`, and sends SIGINT once `ready`. */
+  async function interrupt(args: string[], handle: (res: ServerResponse) => void, ready: (stdout: string, requested: boolean) => boolean) {
+    let requested = false;
+    const hung = createServer((_req, res) => {
+      requested = true;
+      handle(res);
+    });
+    await new Promise<void>((r) => hung.listen(0, '127.0.0.1', r));
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/cli/bside.ts', ...args], {
+      cwd: root,
+      env: { ...process.env, BSIDE_URL: `http://127.0.0.1:${(hung.address() as AddressInfo).port}`, BSIDE_ADMIN_TOKEN: TOKEN, NO_COLOR: '1' },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => (stdout += chunk));
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>;
+    try {
+      while (!ready(stdout, requested) && child.exitCode === null) await new Promise((r) => setTimeout(r, 20));
+      child.kill('SIGINT');
+      const outcome = await Promise.race([exited.then(([code, signal]) => ({ code, signal })), new Promise((r) => setTimeout(() => r('still running'), 3000))]);
+      return { outcome, stdout, stderr };
+    } finally {
+      child.kill('SIGKILL');
+      hung.closeAllConnections();
+      hung.close();
+    }
+  }
+
+  it('stops a command that is waiting on the server at the first Ctrl-C', async () => {
+    const { outcome } = await interrupt(['status'], () => {}, (_out, requested) => requested);
+    expect(outcome).toEqual({ code: null, signal: 'SIGINT' });
+  });
+
+  it('ends watch cleanly', async () => {
+    const stream = (res: ServerResponse) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('event: started\ndata: {"sectionId":"ep1-0042"}\n\n');
+    };
+    const { outcome, stdout } = await interrupt(['watch'], stream, (out) => out.includes('started'));
+    expect(outcome).toEqual({ code: 0, signal: null });
+    expect(stdout).toContain('started  ep1-0042');
   });
 });

@@ -3,7 +3,7 @@
 // `audition` and a strict `commit_plan` — and a bounded number of calls. Tool inputs are validated
 // with zod before anything runs; every tool_use gets a tool_result in one user message; a rejected
 // commit comes back as an error result so Claude repairs it.
-import Anthropic, { APIConnectionError, APIError, APIUserAbortError, BadRequestError, InternalServerError, RateLimitError } from '@anthropic-ai/sdk';
+import Anthropic, { AnthropicError, APIConnectionError, APIError, BadRequestError, InternalServerError, RateLimitError } from '@anthropic-ai/sdk';
 import type {
   BetaContentBlockParam,
   BetaMessage,
@@ -82,11 +82,32 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+// After the 200, the SDK raises an SSE `error` event as an APIError with no status (its `type` says
+// what went wrong), a failed body read as a plain AnthropicError whose cause is the fetch error, and a
+// stream that stops before its message is complete as a plain AnthropicError with one of these texts.
+const TRANSIENT_ERROR_TYPES: ReadonlySet<string> = new Set(['overloaded_error', 'api_error', 'rate_limit_error', 'timeout_error']);
+const NETWORK_ERROR_CODE = /^(ECONNRESET|ECONNABORTED|EPIPE|ETIMEDOUT|ENETDOWN|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ERR_STREAM_PREMATURE_CLOSE|UND_ERR_\w+)$/;
+const STREAM_CUT_SHORT = /^(stream ended without producing a Message|request ended without sending any chunks)/;
+
+/**
+ * Fetch reports a network failure as a TypeError (undici: "terminated", caused by the socket error);
+ * other fetch implementations as an error carrying a system code.
+ */
+function isNetworkFailure(cause: unknown): boolean {
+  if (cause instanceof TypeError) return true;
+  for (let c = cause, depth = 0; c instanceof Error && depth < 4; c = c.cause, depth++) {
+    const code = (c as { code?: unknown }).code;
+    if (typeof code === 'string' && NETWORK_ERROR_CODE.test(code)) return true;
+  }
+  return false;
+}
+
 const isRetryable = (e: unknown) =>
   e instanceof RateLimitError ||
   e instanceof InternalServerError ||
-  (e instanceof APIConnectionError && !(e instanceof APIUserAbortError)) ||
-  (e instanceof APIError && (e.status === 408 || e.status === 409));
+  e instanceof APIConnectionError ||
+  (e instanceof APIError && (e.status === 408 || e.status === 409 || (e.status === undefined && TRANSIENT_ERROR_TYPES.has(e.type ?? '')))) ||
+  (e instanceof AnthropicError && !(e instanceof APIError) && (isNetworkFailure(e.cause) || STREAM_CUT_SHORT.test(e.message)));
 
 function retryAfterMs(e: unknown): number | null {
   if (!(e instanceof APIError) || !e.headers) return null;
@@ -175,7 +196,10 @@ export function createClaudeComposer(opts: ClaudeComposerOptions): Composer {
     }
   }
 
-  /** One Messages call, retried with backoff on rate limits, overload and connection errors. */
+  /**
+   * One Messages call, retried with backoff on rate limits, overload and connection errors, whether
+   * they come before the stream starts or while it runs.
+   */
   async function call(params: BetaMessageStreamParams, signal: AbortSignal, deadlineMs: number): Promise<BetaMessage> {
     for (let attempt = 0; ; attempt++) {
       try {
@@ -215,6 +239,11 @@ export function createClaudeComposer(opts: ClaudeComposerOptions): Composer {
         if (last.role === 'user' && Array.isArray(last.content)) last.content.push({ type: 'text', text });
         else messages.push({ role: 'user', content: [{ type: 'text', text }] });
       };
+      // Claude sometimes ends a turn with nothing in it. The API refuses an empty turn before the last
+      // message, so that reply is left out and the nudge that follows joins the preceding user turn.
+      const keepReply = (content: BetaMessage['content']) => {
+        if (content.some((b) => b.type !== 'text' || b.text.trim())) messages.push({ role: 'assistant', content });
+      };
       let truncations = 0;
 
       while (usage.calls < config.maxApiCallsPerPlan) {
@@ -243,7 +272,7 @@ export function createClaudeComposer(opts: ClaudeComposerOptions): Composer {
             tools = toolsFor(strict);
             continue;
           }
-          const status = e instanceof APIError ? ` (${e.status ?? 'network'})` : '';
+          const status = e instanceof APIError ? ` (${e.status ?? e.type ?? 'network'})` : '';
           log.error('claude: API call failed', { request: request.id, error: (e as Error).message });
           return done({ status: 'failed', reason: `api error${status}: ${(e as Error).message}` });
         }
@@ -262,7 +291,7 @@ export function createClaudeComposer(opts: ClaudeComposerOptions): Composer {
             // A cut-off tool_use can't be answered, so the truncated turn is dropped rather than kept.
             if (uses.length) nudge(NUDGE_TRUNCATED);
             else {
-              messages.push({ role: 'assistant', content: message.content });
+              keepReply(message.content);
               nudge(NUDGE_COMMIT);
             }
             continue;
@@ -274,7 +303,7 @@ export function createClaudeComposer(opts: ClaudeComposerOptions): Composer {
           case 'end_turn':
           case 'stop_sequence':
             if (!uses.length) {
-              messages.push({ role: 'assistant', content: message.content });
+              keepReply(message.content);
               nudge(NUDGE_COMMIT);
               continue;
             }
