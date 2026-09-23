@@ -49,8 +49,25 @@ describe('checker pool', () => {
       scale: 'D:dorian',
       bars: null,
     });
+    expect(result).toMatchObject({ ok: true, errors: [], warnings: [] });
     expect(result.parts[0]).toMatchObject({ id: 'lead', role: 'lead', ok: true, digest: { keyFit: 1, evPerBar: 4 } });
     expect(result.descriptors).toEqual(result.mix!.descriptors);
+  });
+
+  it('reports section-level audition issues on the result, not on a part, and not as ok', async () => {
+    const hats = { role: 'hats' as const, code: 's("hh*16, hh*16, hh*16")', knobs: [], chromatic: false };
+    const result = await checker.audition({
+      parts: [0, 1, 2, 3, 4].map((i) => ({ ...hats, id: `h${i}` })),
+      bpm: null,
+      scale: 'D:dorain',
+      bars: null,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((e) => [e.rule, e.path])).toEqual([['scale', 'scale'], ['density', 'mix']]);
+    expect(result.parts.every((p) => p.ok && p.errors.length === 0)).toBe(true);
+
+    const timedOut = await checker.audition({ parts: [{ ...hats, id: 'h0' }], bpm: null, scale: null, bars: null }, { timeoutMs: 1 });
+    expect(timedOut).toMatchObject({ ok: false, errors: [{ rule: 'timeout' }], mix: null });
   });
 
   it('times out a job, replaces the worker and keeps working', async () => {

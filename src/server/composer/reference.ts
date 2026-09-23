@@ -41,7 +41,7 @@ function task(ctx: TurnContext): string {
   else lines.push(`Write the next ${count} of "${ctx.movement.name}" (no new movement unless the music truly needs one).`);
   lines.push(`Why now: ${r.reasons.map((x) => REASONS[x]).join('; ') || 'scheduled'}.`);
   if (r.vamping) lines.push('The last section is already looping its final phrase, waiting for you.');
-  if (r.replaces.length) lines.push(`Your plan replaces the provisional section(s) ${r.replaces.join(', ')}; they are not in \`committed\`.`);
+  if (r.replaces.length) lines.push(`Your plan replaces the provisional section(s) ${r.replaces.join(', ')}; they are not in \`committed\` (\`request.replacing\` shows what they held).`);
   lines.push(`Your first section starts near cycle ${r.startCycle}. Commit within ${r.softDeadlineSec} s (hard limit ${r.hardDeadlineSec} s).`);
   if (ctx.crowd.requests.length || ctx.crowd.promises.length) lines.push('Decide every request in the untrusted block (and any promise you fulfil) in requestDecisions.');
   lines.push('Audition what you are unsure of, then finish by calling commit_plan.');

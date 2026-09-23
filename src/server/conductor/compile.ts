@@ -13,6 +13,9 @@ import { patternBarAt } from './placement.ts';
 export const ORBITS = 24;
 const NO_VAMP: ReadonlySet<SectionRole> = new Set(['build', 'transition', 'intro', 'outro']);
 
+/** `vamp.loopBars` of a section this long. */
+export const vampLoopFor = (bars: number): SectionProgram['vamp']['loopBars'] => (bars >= 16 ? 8 : 4);
+
 /** Pre-master RMS targets per role (dBFS); parts further than ±4 dB away are trimmed toward them. */
 export const ROLE_RMS_TARGET: Record<PartRole, number> = {
   kick: -12,
@@ -121,6 +124,7 @@ export function checkInputFor(plan: SectionPlan, parts: readonly ResolvedPart[],
     bpm: plan.bpm,
     scale: plan.scale,
     bars: plan.bars,
+    vampLoopBars: vampLoopFor(plan.bars),
   };
 }
 
@@ -150,7 +154,7 @@ export function assignOrbits(parts: readonly ResolvedPart[], prev: SectionProgra
 /** Whether looping the last phrase would still sound (and suit the role). */
 export function vampAllowed(role: SectionRole, bars: number, parts: readonly ResolvedPart[], checks: readonly (PartCheck | undefined)[]): boolean {
   if (NO_VAMP.has(role)) return false;
-  const loop = bars >= 16 ? 8 : 4;
+  const loop = vampLoopFor(bars);
   return parts.some((p, i) => {
     const inLoop = p.enterBar < bars && (p.exitBar === null || p.exitBar > bars - loop);
     return inLoop && levelAt(p, bars) > 0.001 && checks[i]?.analysis?.silent !== true;
@@ -228,7 +232,7 @@ export function compileSection(input: CompileInput): { program: SectionProgram; 
     startCycle,
     bars: plan.bars,
     jumps: [],
-    vamp: { allowed: vampAllowed(plan.role, plan.bars, parts, checks), loopBars: plan.bars >= 16 ? 8 : 4 },
+    vamp: { allowed: vampAllowed(plan.role, plan.bars, parts, checks), loopBars: vampLoopFor(plan.bars) },
     provisional: input.provisional,
     tempo: { fromBpm: plan.bpm, toBpm: plan.bpm, rampBars: plan.tempoRampBars, rampAt: plan.tempoRampAt },
     scale: plan.scale,

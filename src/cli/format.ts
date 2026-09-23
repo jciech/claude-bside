@@ -74,6 +74,10 @@ export function formatAudition(r: AuditionResult, st: Style, title?: string): st
     out.push(`${p.ok ? st.green('✓') : st.red('✗')} ${st.bold(p.id)}  ${p.digest ? digestLine(p.digest) : st.dim('no analysis')}`);
     for (const i of [...p.errors, ...p.warnings]) out.push(formatIssue(i, st).replace(/^/gm, '  '));
   }
+  if (r.errors.length || r.warnings.length) {
+    out.push(`${r.errors.length ? st.red('✗') : st.yellow('!')} ${st.bold('section')}`);
+    for (const i of [...r.errors, ...r.warnings]) out.push(formatIssue(i, st).replace(/^/gm, '  '));
+  }
   if (r.mix) {
     const d = r.mix.descriptors;
     out.push(st.dim(`mix: intensity ${d.intensity} · brightness ${d.brightness} · density ${d.density} · tension ${d.tension} · ${r.mix.onsetsPerBar} onsets/bar · peak overlap ${r.mix.peakOverlapGain}`));

@@ -114,7 +114,10 @@ line, two-space indent (listeners read the code live, highlighted as it plays).
   use it anywhere a number goes: \`.lpf(knob("cut"))\`, \`.room(knob("wet"))\`, \`.delay(knob("echo"))\`.
 - \`follows\` wires it to the room's pull pad (brightness or intensity, \`-\` inverts): a cutoff that
   follows brightness, a send that follows \`-intensity\`. Automation lanes target \`"knob:cut"\`.
-- Keep the knob's range musical and inside the parameter's limits at both ends.`,
+- Keep the knob's range musical and inside the parameter's limits at both ends.
+- A knob is read at each event's time where \`knob()\` is applied, so time transforms written after it
+  warp its automation too: \`.lpf(knob("cut")).slow(2)\` plays the cut lane at half speed. Put
+  \`slow fast early late ply hurry\` BEFORE knob-controlled methods: \`.slow(2).lpf(knob("cut"))\`.`,
   ex('pad', 'C:minor', 'n("<[0,2,4,6] [5,7,9,11]>/2")\n  .scale("C3:minor")\n  .s("supersaw")\n  .unison(5)\n  .detune(0.18)\n  .attack(1.5)\n  .release(3)\n  .lpf(knob("cut"))\n  .room(knob("wet"))\n  .roomsize(6)\n  .gain(0.4)', [
     { name: 'cut', default: 1400, min: 500, max: 4000 },
     { name: 'wet', default: 0.5, min: 0.2, max: 0.8 },

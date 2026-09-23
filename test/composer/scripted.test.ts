@@ -244,7 +244,7 @@ describe('the scripted autopilot', () => {
     const commits: Plan[] = [];
     const tools: ComposerTools = {
       request: {} as PlanRequest,
-      audition: async () => ({ parts: [], mix: null, descriptors: null }),
+      audition: async () => ({ ok: true, errors: [], warnings: [], parts: [], mix: null, descriptors: null }),
       commit: async (plan): Promise<CommitResult> => {
         commits.push(plan);
         return commits.length === 1
@@ -266,7 +266,7 @@ describe('the scripted autopilot', () => {
     let calls = 0;
     const closed: ComposerTools = {
       request,
-      audition: async () => ({ parts: [], mix: null, descriptors: null }),
+      audition: async () => ({ ok: true, errors: [], warnings: [], parts: [], mix: null, descriptors: null }),
       commit: async () => {
         calls++;
         return { accepted: false, errors: [{ severity: 'error', rule: 'request-closed', message: 'closed' }], warnings: [], sections: [] };

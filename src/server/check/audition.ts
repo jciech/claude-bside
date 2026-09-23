@@ -25,25 +25,21 @@ export function auditionToSection(input: AuditionInput): CheckSectionInput {
   };
 }
 
-/**
- * AuditionResult has no section-level issue list, so section issues (mix density, an invalid scale,
- * timeout, busy) are reported on the first part with their own `path`.
- */
 export function sectionToAudition(input: AuditionInput, check: SectionCheck): AuditionResult {
+  const parts = check.parts.map((p, i) => ({
+    id: p.id,
+    role: input.parts[i]?.role ?? 'texture',
+    ok: p.ok,
+    errors: p.errors,
+    warnings: p.warnings,
+    analysis: p.analysis,
+    digest: p.digest,
+  }));
   return {
-    parts: check.parts.map((p, i) => {
-      const errors = i === 0 ? [...p.errors, ...check.errors] : p.errors;
-      const warnings = i === 0 ? [...p.warnings, ...check.warnings] : p.warnings;
-      return {
-        id: p.id,
-        role: input.parts[i]?.role ?? 'texture',
-        ok: p.ok && errors.length === 0,
-        errors,
-        warnings,
-        analysis: p.analysis,
-        digest: p.digest,
-      };
-    }),
+    ok: check.errors.length === 0 && parts.every((p) => p.ok),
+    errors: check.errors,
+    warnings: check.warnings,
+    parts,
     mix: check.mix,
     descriptors: check.mix?.descriptors ?? null,
   };

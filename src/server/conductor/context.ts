@@ -2,7 +2,7 @@
 // functions) and lean on tokens — rounded numbers, capped lists, code only where carrying needs it.
 // Pure: the conductor gathers the inputs (schedule, ledger digests, crowd summary, budgets).
 import type { CrateItem, LedgerRow, PersistedSession } from '../types.ts';
-import type { CrowdSummary, PlanReason, SectionSummary, TurnContext } from '../../shared/composer-api.ts';
+import type { CrowdSummary, PlanReason, ReplacedSection, SectionSummary, TurnContext } from '../../shared/composer-api.ts';
 import type { PartDigest } from '../../shared/analysis.ts';
 import { BPM_MAX, BPM_MIN, cpsToBpm, MAX_PARTS_PER_SECTION, SECTION_LENGTHS, type SectionRole } from '../../shared/music.ts';
 import type { ProgramPart, SectionProgram } from '../../shared/program.ts';
@@ -129,6 +129,10 @@ export function buildTurnContext(input: TurnContextInput): TurnContext {
   const current = [...input.sections].reverse().find((s) => s.startCycle <= nowCycle) ?? null;
   const replaced = new Set(input.request.replaces);
   const committed = input.sections.filter((s) => s.startCycle > nowCycle && !replaced.has(s.id));
+  const replacing = input.sections.filter((s) => replaced.has(s.id)).map((s): ReplacedSection => {
+    const { id, name, role, startCycle, bars, bpm, scale, chords, parts } = summaries.get(s.id)!;
+    return { id, name, role, startCycle, bars, bpm, scale, chords, parts: parts.map((p) => ({ id: p.id, role: p.role, instrument: p.instrument })) };
+  });
   const bounds = planBarBounds(secondsPerBar);
 
   const arc: Arc = movement
@@ -169,6 +173,7 @@ export function buildTurnContext(input: TurnContextInput): TurnContext {
       sectionsWanted: input.request.sectionsWanted,
       startCycle: input.request.targetCycle,
       replaces: input.request.replaces,
+      replacing,
       vamping: input.request.vamping,
       scheduleRev: input.scheduleRev,
     },

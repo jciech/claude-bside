@@ -184,7 +184,7 @@ export function createFakeChecker(): FakeChecker {
       };
     },
     async audition(): Promise<AuditionResult> {
-      return { parts: [], mix: null, descriptors: null };
+      return { ok: true, errors: [], warnings: [], parts: [], mix: null, descriptors: null };
     },
     async close() {},
   };

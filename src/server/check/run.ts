@@ -103,7 +103,10 @@ export function runCheck(input: CheckSectionInput, deps: { index: SoundIndex; on
   let section: Pick<SectionCheck, 'mix' | 'fingerprint' | 'errors' | 'warnings'> = { mix: null, fingerprint: null, errors: [], warnings: [] };
   if (compiled.length) {
     try {
-      const result = analyzeSection({ parts: compiled, bpm: input.bpm, scale: input.scale, bars: input.bars, index: deps.index }, { onPart: deps.onPart });
+      const result = analyzeSection(
+        { parts: compiled, bpm: input.bpm, scale: input.scale, bars: input.bars, vampLoopBars: input.vampLoopBars, index: deps.index },
+        { onPart: deps.onPart },
+      );
       result.parts.forEach((p, i) => {
         const check = compiledChecks[i]!;
         check.analysis = p.analysis;

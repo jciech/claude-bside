@@ -58,12 +58,17 @@ const plan: Plan = {
 };
 
 const auditionOk: AuditionResult = {
+  ok: true,
+  errors: [],
+  warnings: [],
   parts: [{ id: 'bass', role: 'bass', ok: true, errors: [], warnings: [], analysis: null, digest: { id: 'bass', role: 'bass', instrument: 'Sawtooth', evPerBar: 1, register: 'bass', sync: 0, bright: 0.3, loud: 0.4, period: 2, keyFit: 1 } }],
   mix: { descriptors: { intensity: 0.4, brightness: 0.3, density: 0.2, tension: 0.1 }, spans: null as never, onsetsPerBar: 1, maxOnsetsPerBar: 1, peakOverlapGain: 0.5, audibleParts: 1, period: 2 },
   descriptors: { intensity: 0.4, brightness: 0.3, density: 0.2, tension: 0.1 },
 };
 const reverbIssue = { severity: 'error' as const, rule: 'unknown-method', message: 'Unknown Strudel method .reverb().', path: 'kick', line: 1, column: 10, excerpt: 's("sbd").reverb(1)\n         ^', hint: 'Did you mean .room()?' };
-const auditionBad: AuditionResult = { parts: [{ id: 'kick', role: 'kick', ok: false, errors: [reverbIssue], warnings: [], analysis: null, digest: null }], mix: null, descriptors: null };
+const auditionBad: AuditionResult = { ok: false, errors: [], warnings: [], parts: [{ id: 'kick', role: 'kick', ok: false, errors: [reverbIssue], warnings: [], analysis: null, digest: null }], mix: null, descriptors: null };
+const mixIssue = { severity: 'error' as const, rule: 'density', message: 'All parts together play 256 events in bar 0; a section may play at most 192 per bar.', path: 'mix' };
+const auditionMixBad: AuditionResult = { ...auditionOk, ok: false, errors: [mixIssue] };
 
 interface Seen {
   method: string;
@@ -92,7 +97,10 @@ function route(req: IncomingMessage, res: ServerResponse, payload: unknown) {
   if (req.method === 'GET' && p === '/status') return send(200, status());
   if (req.method === 'GET' && p === '/context') return send(200, pending.context);
   if (req.method === 'GET' && p === '/reference') return send(200, { system: '# B-Side\nYou are the composer.' });
-  if (req.method === 'POST' && p === '/audition') return send(200, JSON.stringify(payload).includes('reverb') ? auditionBad : auditionOk);
+  if (req.method === 'POST' && p === '/audition') {
+    const text = JSON.stringify(payload);
+    return send(200, text.includes('reverb') ? auditionBad : text.includes('hh*64') ? auditionMixBad : auditionOk);
+  }
   if (req.method === 'POST' && p === '/commit') {
     const name = (payload as { plan: Plan }).plan.sections[0]!.name;
     const result: CommitResult =
@@ -230,6 +238,13 @@ describe('bside against the composer API', () => {
     const bad = io();
     expect(await main(['audition', '--code', 's("bd")', '--role', 'drums'], bad.io)).toBe(2);
     expect(await main(['audition', '--code', 's("bd")', '--knob', 'cut'], io().io)).toBe(2);
+  });
+
+  it('audition exits 1 and prints section-level issues when only the mix fails', async () => {
+    const t = io();
+    expect(await main(['audition', '--code', 's("hh*64")', '--role', 'hats'], t.io)).toBe(1);
+    expect(t.text()).toContain('✓ bass');
+    expect(t.text()).toContain('✗ section\n  ✗ mix  density\n    All parts together play 256 events');
   });
 
   it('audition <plan.json> auditions each section\'s new code at its tempo and scale, skipping carried parts', async () => {

@@ -133,7 +133,7 @@ async function run(args: Args, io: Io, st: Style): Promise<number> {
       for (const { title, input } of inputs) {
         const r = await api.post<AuditionResult>('/audition', input);
         results.push(r);
-        ok &&= r.parts.every((p) => p.ok);
+        ok &&= r.ok;
         if (!json) io.out(formatAudition(r, st, inputs.length > 1 ? title : undefined));
       }
       if (json) io.out(JSON.stringify(results.length === 1 ? results[0] : results, null, 2));

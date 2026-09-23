@@ -50,6 +50,19 @@ describe('density over the whole section and its vamp', () => {
     }
   });
 
+  it('windows the vamp with the section\'s own loop length', () => {
+    // The burst is dense from pattern bar 8 on, and its part only sounds in score bars 0–3. An 8-bar
+    // loop replays score bars 0–7 (burst audible in play bars 8–11); a 4-bar loop replays 4–7.
+    const parts = [
+      part('burst', 's("<hh!8 [hh*16, hh*16, hh*16]!8>")', { role: 'hats', exitBar: 4 }),
+      ...[0, 1, 2, 3].map((i) => part(`bed${i}`, 's("hh*16, hh*16, hh*8")', { role: 'hats' })),
+    ];
+    const fallback = check(parts, { bars: 8 });
+    expect(fallback.errors.map((e) => e.message)).toEqual(['All parts together play 208 events in bar 8; a section may play at most 192 per bar.']);
+    expect(check(parts, { bars: 8, vampLoopBars: 4 }).errors).toEqual([]);
+    expect(check(parts, { bars: 8, vampLoopBars: 8 }).errors).toEqual([]); // clamped to half the section, like the performer
+  });
+
   it('limits the whole mix', () => {
     const busy = Array.from({ length: 5 }, (_, i) => part(`p${i}`, 's("hh*16, hh*16, hh*16")', { role: 'hats' }));
     const c = check(busy);

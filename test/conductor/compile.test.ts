@@ -66,6 +66,17 @@ describe('carried parts', () => {
       ['lead', 0],
     ]);
   });
+
+  it('tells the checker the vamp loop the program will have', async () => {
+    for (const bars of [8, 16, 32] as const) {
+      const plan = section({ bars, parts: [part('lead', { code: 's("square")' })] });
+      const { parts } = resolveSection(plan, null, 'sections[0]');
+      const input = checkInputFor(plan, parts, new Map());
+      const { program } = compileSection({ id: 's', index: 0, track: 0, movementId: 'm', author: 'external', startCycle: 0, plan, parts, provisional: false, prev: null, check: await checkOf(input) });
+      expect(input.vampLoopBars, `${bars} bars`).toBe(program.vamp.loopBars);
+    }
+    expect(checkInputFor(section({ bars: 8 }), [], new Map()).vampLoopBars).toBe(4);
+  });
 });
 
 describe('orbits', () => {
