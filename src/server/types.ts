@@ -4,7 +4,7 @@
 // Ownership:  Checker → src/server/check        RoomClock, Crowd → src/server/room
 //             Conductor, Ledger, Store, buildTurnContext → src/server/conductor (+ store.ts)
 //             Composer drivers → src/server/composer        main/config/log/http/socket → server root, room, http
-import type { AuditionInput, FormStep, Knob, Plan } from '../shared/plan.ts';
+import type { AuditionInput, Automation, FormStep, Knob, Plan } from '../shared/plan.ts';
 import type {
   AuditionResult,
   CommitBody,
@@ -64,6 +64,19 @@ export interface CheckPartInput {
   exitBar: number | null;
   /** Pattern bar at the section's bar 0: 0 for fresh parts; for continuing parts, where they are. */
   patternBarAtStart: number;
+  /**
+   * One instance with the same-id part of the section before (ProgramPart.continues): its pattern runs
+   * on play time, straight through the vamp. False for a part that starts in this section: the
+   * performer replays its score bars in the vamp, so the checker does too. Omitted: pattern time runs
+   * on, which checks every bar either reading can play.
+   */
+  continues?: boolean;
+  /**
+   * The part's level and knob lanes (plan automation). The checker measures the part the way the
+   * performer plays it: each event at the level of its bar, knobs bound to their lanes (from each
+   * knob's default). Omitted: no lanes.
+   */
+  automation?: Automation[];
 }
 
 export interface CheckSectionInput {

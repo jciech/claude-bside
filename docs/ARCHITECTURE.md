@@ -190,8 +190,10 @@ Tempo is part of the section: `bpm` + `tempoRampBars` + `tempoRampAt` ('start' o
    known; `tempoRampBars ≤ bars`; crossfade ≤ min(8, half of either section); breath ≤ 2; every public
    string passes `isPublicText` (`src/shared/text.ts`).
 2. **Code** through `Checker.checkSection` (validate → evaluate → analyse the full `bars` + one vamp
-   loop, at the section's tempo, in a worker): errors are phrased for self-repair — rule, message,
-   line/col, excerpt, hint ("Unknown method `.reverb` — did you mean `.room`?").
+   loop, at the section's tempo, in a worker, the way the performer plays it: level and knob lanes
+   applied, parts that start in the section replaying their score in the vamp while continuing parts
+   run on, only bars inside each part's window counted): errors are phrased for self-repair — rule,
+   message, line/col, excerpt, hint ("Unknown method `.reverb` — did you mean `.room`?").
 3. **Musical rules**: key fit per bar against the (possibly alternating) scale — < 0.6 is an error,
    0.6–0.8 a warning, `chromatic` parts exempt; bass register; onsets per bar ≤ `MAX_PART_ONSETS_PER_BAR`;
    hap limits; room/delay parameters constant per part; unknown sounds, soundfont ranges and variants
@@ -482,8 +484,12 @@ depth:
    RNG mutators, visuals, MIDI/OSC. `ENGINE_OWNED_KEYS` ⊆ denied keys (a test asserts it). No
    computed member access, `constructor`/`__proto__`, `${}` templates, labels, assignments or loops;
    arrows only with expression bodies that pass the same allowlist; `knob()` only with a string
-   literal naming a declared knob. Density arguments (`fast`, `ply`, `*n`, `segment`, `chop`…) must be
-   constants ≤ 16.
+   literal naming a declared knob. Arguments that multiply events or a query's work (`fast`, `ply`,
+   `*n`, `segment`, `chop`, `inside`, `swing`, `shuffle`, `chunk`…) must be constants ≤ 16, and
+   `every`/`lastOf` counts constants too (no knobs, no patterns); `scaleTranspose` offsets are literal
+   numbers within ±128. A static worst case of events per bar — structure sources × multipliers ×
+   the polyphony of every patterned value joined into a pattern (`.gain("[1,1]")` plays each event
+   twice) — must stay ≤ 16× the per-part limit, so no later bar or knob position can exceed it.
 2. **Isolated evaluation** in worker threads (vm context with no ambient globals), per-job timeout,
    heap cap, recycled workers, and analysis over the whole section plus a vamp loop.
 3. **Client re-validation** with the same allowlist before compiling anything, and a compile scope

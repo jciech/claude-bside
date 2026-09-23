@@ -12,7 +12,7 @@ export interface Issue {
    * - validator: "syntax", "quotes", "mini", "unknown-method", "unknown-function", "unknown-identifier",
    *   "unknown-key", "denied", "density", "size", "number", "knob", "knob-undeclared", "unused"
    * - evaluation: "syntax", "mini", "denied", "not-pattern", "runtime", "timeout"
-   * - checker: "knob-unused", "knob-range", "timeout", "busy", "resource", "internal"
+   * - checker: "knob-unused", "knob-range", "density" (at a knob's extreme), "timeout", "busy", "resource", "internal"
    * - analyser: "scale", "silent", "density", "limit", "value", "key-fit", "constant-fx", "unknown-sound",
    *   "denied", "sound-range", "sample-index", "n-without-scale", "arith-on-control", "runtime", "strudel"
    * - conductor: "schema", "carry", "knob-undeclared", "request", "fork", "text", "tempo", "targets",
@@ -41,7 +41,10 @@ export interface SoundUse {
   family: string;
   known: boolean;
   onsets: number;
-  /** Share of the part's loudness contributed by this sound (0..1). */
+  /**
+   * Share of the part's loudness contributed by this sound (0..1): the square root of its energy
+   * (catalog level × gain² × seconds played, as in the loudness estimate) over the sum for all sounds.
+   */
   share: number;
 }
 
@@ -123,7 +126,7 @@ export interface PartCheck extends CodeCheck {
 /** Features used for similarity/novelty. One definition, shared by the checker and the ledger. */
 export interface SectionFingerprint {
   descriptors: Descriptors;
-  /** Sound id → loudness share across the section (sums to ~1). */
+  /** Sound id → loudness share across the section (sums to ~1), as SoundUse.share, at each part's fader. */
   soundShares: Record<string, number>;
   kickGrid16: number[];
   backbeatGrid16: number[];
@@ -159,8 +162,9 @@ function cosine(a: number[], b: number[]): number {
 
 /**
  * Distance 0 (identical) … 1 (unrelated). Weights: sounds 0.35 (weighted Jaccard of loudness
- * shares), descriptors 0.25 (mean |Δ| of intensity/brightness/density), kick grid 0.15, backbeat
- * grid 0.10, harmony/tempo 0.15 (scale 0.08, chords 0.04, bpm 0.03 per 12 BPM).
+ * shares), descriptors 0.21 (mean |Δ| of intensity/brightness/density), kick grid 0.15, backbeat
+ * grid 0.10, harmony/tempo 0.19 (scale 0.10, chords 0.06, bpm 0.03 per 12 BPM). A new key and chord
+ * cycle alone (0.16) clear the 0.15 similarity threshold, as a new palette or a new groove does.
  */
 export function fingerprintDistance(a: SectionFingerprint, b: SectionFingerprint): number {
   const ids = new Set([...Object.keys(a.soundShares), ...Object.keys(b.soundShares)]);
@@ -181,5 +185,5 @@ export function fingerprintDistance(a: SectionFingerprint, b: SectionFingerprint
   const scale = a.scale === b.scale ? 0 : 1;
   const chords = a.chordHash && b.chordHash ? (a.chordHash === b.chordHash ? 0 : 1) : 0.5;
   const bpm = Math.min(1, Math.abs(a.bpm - b.bpm) / 12);
-  return Math.min(1, 0.35 * sounds + 0.25 * desc + 0.15 * kick + 0.1 * back + 0.08 * scale + 0.04 * chords + 0.03 * bpm);
+  return Math.min(1, 0.35 * sounds + 0.21 * desc + 0.15 * kick + 0.1 * back + 0.1 * scale + 0.06 * chords + 0.03 * bpm);
 }

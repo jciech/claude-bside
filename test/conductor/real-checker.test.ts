@@ -4,6 +4,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createChecker } from '../../src/server/check/checker.ts';
 import type { Checker } from '../../src/server/types.ts';
 import { STORE_KEYS } from '../../src/server/types.ts';
+import { checkInputFor, resolveSection } from '../../src/server/conductor/compile.ts';
 import { catalog, createRoom, movement, part, plan, section } from './harness.ts';
 
 const kick = part('kick', { role: 'kick', code: 's("sbd*4").decay(0.3).gain(0.9)', level: 0.9 });
@@ -48,5 +49,35 @@ describe('with the real checker', () => {
     const rows = room.store.readJsonl<{ t: string; row?: { sectionId: string; sounds: { id: string }[] } }>(STORE_KEYS.ledger).filter((e) => e.t === 'row');
     expect(rows.map((r) => r.row!.sectionId)).toEqual([boot.id, program.id]);
     expect(rows[1]!.row!.sounds.map((s) => s.id).sort()).toEqual(['sawtooth', 'sbd', 'triangle']);
+  }, 30_000);
+
+  it('measures a build the way it plays: knob and level lanes reach the checker', async () => {
+    checker ??= createChecker({ catalog, poolSize: 2 });
+    const build = section({
+      name: 'Rising Tide',
+      role: 'build',
+      bpm: 124,
+      scale: 'D:minor',
+      parts: [
+        part('kick', { role: 'kick', code: 's("sbd*4")', level: 0.9 }),
+        part('lead', {
+          role: 'lead',
+          code: 'note("d3 f3 a3 c4").s("sawtooth").lpf(knob("cut"))',
+          level: 0.7,
+          knobs: [{ name: 'cut', default: 300, min: 200, max: 9000, follows: 'brightness' }],
+          automation: [{ target: 'knob:cut', fromBar: 0, toBar: 16, from: 300, to: 8000, curve: 'exp' }],
+        }),
+        part('hats', { role: 'hats', code: 's("hh*8")', level: 0, automation: [{ target: 'level', fromBar: 4, toBar: 12, from: 0, to: 0.8, curve: 'linear' }] }),
+      ],
+    });
+    const { parts } = resolveSection(build, null, 'sections[0]');
+    const check = await checker.checkSection(checkInputFor(build, parts, new Map()));
+    expect(check.ok).toBe(true);
+    const { spans, audibleParts } = check.mix!;
+    // accept.ts's build rule: at least 0.2 more intense or tense at the end than at the start.
+    expect(Math.max(spans.intensity.end - spans.intensity.start, spans.tension.end - spans.tension.start)).toBeGreaterThanOrEqual(0.2);
+    expect(spans.brightness.end).toBeGreaterThan(spans.brightness.start);
+    expect(audibleParts).toBe(3);
+    expect(Object.keys(check.fingerprint!.soundShares).sort()).toEqual(['hh', 'sawtooth', 'sbd']);
   }, 30_000);
 });

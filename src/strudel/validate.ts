@@ -7,8 +7,8 @@ import { parse, type Comment, type Expression, type Node, type Program, type Spr
 import type { Issue } from '../shared/analysis.ts';
 import { MAX_DENSITY_FACTOR, MAX_PART_ONSETS_PER_BAR } from '../shared/limits.ts';
 import { ALLOWLIST } from './allowlist.ts';
-import { STATIC_EVENTS_CEILING, constantValue, densityBound, densitySpec, type DensitySpec } from './density.ts';
-import { checkMini } from './mini.ts';
+import { STATIC_EVENTS_CEILING, constantValue, densityBound, densitySpec, valueBound, type DensitySpec, type ValueBound } from './density.ts';
+import { checkMini, miniNumbers } from './mini.ts';
 import { synonymOf, suggest } from './suggest.ts';
 
 export interface ValidateResult {
@@ -226,10 +226,15 @@ export function validatePart(code: string, opts: { knobs: string[] }): ValidateR
         return;
       case 'ObjectExpression':
         return object(n, scope, depth);
-      case 'BinaryExpression':
+      case 'BinaryExpression': {
         if (!ARITHMETIC.has(n.operator)) return r.error('syntax', `The operator ${n.operator} is not allowed; only + - * / % ** on numbers.`, n.start);
+        const v = numericValue(n);
+        if (v !== null && !(Math.abs(v) <= MAX_NUMBER)) {
+          return r.error('number', `${clip(code.slice(n.start, n.end))} is ${String(v)}, out of range (±${MAX_NUMBER}).`, n.start);
+        }
         expr(n.left, scope, depth + 1);
         return expr(n.right, scope, depth + 1);
+      }
       case 'UnaryExpression':
         if (n.operator !== '-' && n.operator !== '+') return r.error('syntax', `The operator ${n.operator} is not allowed.`, n.start);
         return expr(n.argument, scope, depth + 1);
@@ -357,7 +362,24 @@ export function validatePart(code: string, opts: { knobs: string[] }): ValidateR
     }
     const spec = name !== null ? densitySpec(name) : undefined;
     if (spec && name !== null) densityArgs(n, name, spec, method);
+    const bound = name !== null ? valueBound(name) : undefined;
+    if (bound && name !== null) boundedValue(n, name, bound, method);
     for (const a of n.arguments) expr(a, scope, depth + 1);
+  }
+
+  function boundedValue(n: Call, name: string, bound: ValueBound, method: boolean): void {
+    const arg = n.arguments[bound.index];
+    if (!arg) return;
+    const shown = method ? `.${name}()` : `${name}()`;
+    const constant = numericValue(arg);
+    const inMini = arg.type === 'Literal' && typeof arg.value === 'string' && arg.raw?.[0] === '"' ? miniNumbers(arg.value) : null;
+    const largest = constant !== null ? Math.abs(constant) : inMini && !inMini.nonNumeric ? inMini.maxAbs : null;
+    if (largest === null) {
+      r.error('number', `The ${bound.label} of ${shown} must be a number or a mini-notation string of numbers: ${bound.why}.`, arg.start,
+        `Write e.g. ${method ? '.' : ''}${name}("<0 -1 2>").`);
+    } else if (!(largest <= bound.maxAbs)) {
+      r.error('number', `The ${bound.label} of ${shown} reaches ${formatCount(largest)}; it must stay within ±${bound.maxAbs}: ${bound.why}.`, arg.start);
+    }
   }
 
   function densityArgs(n: Call, name: string, spec: DensitySpec, method: boolean): void {
@@ -374,7 +396,7 @@ export function validatePart(code: string, opts: { knobs: string[] }): ValidateR
       if (!arg) { values.push(rule.fallback ?? rule.max); continue; }
       const v = constantValue(arg);
       if (v === null) {
-        r.error('density', `The ${rule.label} of ${shown} must be a constant number: a patterned value can multiply events at any later bar.`, arg.start,
+        r.error('density', `The ${rule.label} of ${shown} must be a constant number: a patterned value (or a knob) can multiply events or work at any later bar.`, arg.start,
           `Write e.g. ${method ? '.' : ''}${name}(${Math.min(2, rule.max)}). For variation, put it in the mini-notation ("<hh*8 hh*16>") or use .every(4, x => x.${name}(…)).`);
         values.push(rule.max);
         continue;
@@ -382,7 +404,7 @@ export function validatePart(code: string, opts: { knobs: string[] }): ValidateR
       values.push(v);
       if (v < rule.min || v > rule.max) {
         r.error('density', `The ${rule.label} of ${shown} is ${v}; it must be between ${fmtRange(rule.min)} and ${fmtRange(rule.max)}.`, arg.start,
-          `Density factors are limited to ${MAX_DENSITY_FACTOR}.`);
+          rule.max === MAX_DENSITY_FACTOR ? `Density factors are limited to ${MAX_DENSITY_FACTOR}.` : undefined);
       } else if (rule.minAbs !== undefined && Math.abs(v) < rule.minAbs) {
         r.error('density', `The ${rule.label} of ${shown} is ${v}; its size must be at least ${fmtRange(rule.minAbs)}.`, arg.start);
       }
@@ -443,9 +465,29 @@ export function validatePart(code: string, opts: { knobs: string[] }): ValidateR
   }
 }
 
+/** Value of arithmetic on number literals (possibly not finite), or null when anything else is involved. */
+function numericValue(node: Node): number | null {
+  const n = node as Expression;
+  if (n.type === 'Literal') return typeof n.value === 'number' ? n.value : null;
+  if (n.type === 'UnaryExpression' && (n.operator === '-' || n.operator === '+')) {
+    const v = numericValue(n.argument);
+    return v === null ? null : n.operator === '-' ? -v : v;
+  }
+  if (n.type === 'BinaryExpression' && ARITHMETIC.has(n.operator)) {
+    const a = numericValue(n.left as Node);
+    const b = numericValue(n.right);
+    if (a === null || b === null) return null;
+    const ops: Record<string, (x: number, y: number) => number> = {
+      '+': (x, y) => x + y, '-': (x, y) => x - y, '*': (x, y) => x * y, '/': (x, y) => x / y, '%': (x, y) => x % y, '**': (x, y) => x ** y,
+    };
+    return ops[n.operator]!(a, b);
+  }
+  return null;
+}
+
 const clip = (s: string) => (s.length > 40 ? `${s.slice(0, 37)}…` : s);
 const fmtRange = (v: number) => (v > 0 && v < 1 ? `1/${Math.round(1 / v)}` : String(v));
-const formatCount = (v: number) => (v >= 1e6 ? `${(v / 1e6).toPrecision(2)} million` : String(Math.round(v)));
+const formatCount = (v: number) => (v >= 1e9 ? 'more than a billion' : v >= 1e6 ? `${(v / 1e6).toPrecision(2)} million` : String(Math.round(v)));
 
 function describeStatement(type: string): string {
   const names: Record<string, string> = {
