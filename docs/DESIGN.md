@@ -133,7 +133,7 @@ the next downbeat**.
 | Breakdown | Lens narrows, ghosts dim to 40 %, sheen desaturates, pad washes rise |
 | Silence | The platter keeps turning, the stylus lifts 6 px, the label shows "— listening —" |
 | Part error | Its code row shows "muted: …" (clay-2 + icon); chip dashed; the rest plays |
-| Disconnected | The record continues on the client clock; "reconnecting · still playing" |
+| Disconnected | The record continues on the client clock; "reconnecting · still playing" (refused for capacity: "room full · trying again") |
 
 ### Tiers
 
@@ -190,9 +190,9 @@ default), dock in the thumb zone respecting the safe area.
 | `CodeView` / `PartRow` | one row per part: gutter (glyph, name, meter) + `id: code`; sounding mini-notation atoms lit in the voice colour (background, `#0B0A0E` text), control atoms underlined; highlights last `max(duration, 120 ms)`; fresh ink; "Copy" and "Open in strudel.cc"; follow mode |
 | `LinerNotes` / `NoteCard` | a timeline, not toasts; the current note Newsreader italic with a clay rule; past notes smaller with bar stamps; "↳ answering …" in clay-2 |
 | `CueChip` | "drop in 6 bars" from the committed schedule (next section role/start); provisional sections read "planned" |
-| `PullPad` | others as identity-hue dots that school gently; you as a white ring; the pull as a soft field + dashed ring; the needle as a clay dot with a trail joined to the pull by a dashed tension line; status line in words; keyboard = two sliders with verbal `aria-valuetext`; pointer drag with `touch-action:none`, tap-to-place; sends `pad {x, y, active}` at ≤ 4 Hz while dragging and once on release (`active: false`) |
+| `PullPad` | others as identity-hue dots that school gently; you as a white ring; the pull as a soft field + dashed ring; the needle as a clay dot with a trail joined to the pull by a dashed tension line; status line in words; keyboard and screen readers = two sliders with verbal `aria-valuetext` (keys and assistive-tech value changes both lean); pointer drag with `touch-action:none`, tap-to-place; sends `pad {x, y, active}` at ≤ 4 Hz while dragging and once on release (`active: false`), never faster than the server's pad bucket |
 | `ReactionDock` | Yes (🔥 `react fire`), Stay (`keep +1`), Move on (`keep −1`), Too much (😣 `react harsh`); keep ballots carry the section you heard; shortcuts 1–4 outside inputs; draining cooldown rings mirror `RATE_LIMITS`; your etch (`fire`/`stay`/`move`/`harsh`) appears at the rim; `keepPending` shows what the room is doing ("moving on at bar 72", "this track ends in 6 bars anyway") |
-| `VoteCard` | fieldset/legend radio group, bars filling on tally, closes at a bar; the winner flies into the liner notes on the downbeat |
+| `VoteCard` | fieldset/legend radio group, bars filling on tally, closes at a bar; the winner flies into the liner notes on the downbeat; arrowing through it sends the latest choice within `RATE_LIMITS.vote`, and once sent the checked option is the one the room counted; disabled while out of the room |
 | `AskBox` / `AskList` | 140 chars, 1 per minute; your raw text visible only to you; others see Claude's paraphrase once decided; lifecycle chips |
 | `Landing` | the room's record spins silently **in sync** before the unlock; "● LIVE NOW · 23 IN THE ROOM"; "Drop the needle" — the unlock happens synchronously in its click handler; audio fades in from the next downbeat over one bar |
 | `Settings` | volume, calm visuals, pause visuals, keyboard shortcuts toggle |

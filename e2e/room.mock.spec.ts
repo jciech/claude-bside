@@ -67,6 +67,40 @@ test.describe('the room (mock)', () => {
     await expect(page.locator('#pull-x')).toHaveAttribute('aria-valuetext', 'darker');
   });
 
+  test('the pad follows a screen reader adjusting its sliders', async ({ page }) => {
+    await showPanel(page, 'pull');
+    const x = page.locator('#pull-x');
+    await expect(x).toHaveAttribute('aria-valuetext', 'neutral');
+    // What VoiceOver and TalkBack do to a native range: set the value, fire input and change, no keys.
+    for (let i = 0; i < 3; i++) {
+      await x.evaluate((el: HTMLInputElement) => {
+        el.stepUp();
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    }
+    await expect(x).toHaveAttribute('aria-valuetext', /brighter/);
+    await expect(x).toHaveValue('0.15');
+    await expect(page.locator('.pull .me')).toContainText('You lean');
+  });
+
+  test('the pad and the record follow a pixel-ratio change that resizes nothing', async ({ page }, info) => {
+    test.skip(isPhone(info.project.name), 'a desktop window dragged to another screen');
+    await showPanel(page, 'pull');
+    const pad = page.locator('.pad canvas');
+    const record = page.locator('.record canvas.live');
+    await expect(record).toBeVisible();
+    const ratio = (c: HTMLCanvasElement) => c.width / c.clientWidth;
+    await expect.poll(() => pad.evaluate(ratio)).toBeCloseTo(1, 1);
+    await expect.poll(() => record.evaluate(ratio)).toBeCloseTo(1, 1);
+    const viewport = page.viewportSize()!;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride', { ...viewport, deviceScaleFactor: 2, mobile: false });
+    await expect.poll(() => pad.evaluate(ratio)).toBeCloseTo(2, 1);
+    // The record's tier may cap it at 1.5 on a slow machine; either way it is no longer drawn at 1×.
+    await expect.poll(() => record.evaluate(ratio)).toBeGreaterThanOrEqual(1.5);
+  });
+
   test('the desktop room fits one viewport; "?" says what is playing', async ({ page }, info) => {
     test.skip(isPhone(info.project.name), 'desktop layout');
     const [height, viewport] = await page.evaluate(() => [document.documentElement.scrollHeight, window.innerHeight]);
@@ -114,6 +148,54 @@ test.describe('the room (mock)', () => {
     await group.getByText('Double-time hats').click();
     await expect(group.getByRole('radio', { name: /Double-time hats/ })).toBeChecked();
     await expect(page.locator('.vote .foot')).toContainText('you picked B');
+  });
+
+  test('arrowing through the vote settles on the last option', async ({ page }, info) => {
+    test.skip(isPhone(info.project.name), 'keyboard path is covered on desktop');
+    await showPanel(page, 'vote');
+    const group = page.getByRole('group', { name: /Where should the harbour go next/ });
+    await group.getByRole('radio').first().focus();
+    // Every arrow checks, and so votes for, the next option: A → B → C → A → B. Four votes in a
+    // second are one more than the room's vote bucket holds (the mock refuses it like the server).
+    for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowDown');
+    await expect(page.locator('.vote .foot')).toContainText('you picked B');
+    // Past the time a pick is shown on its own, what the room counted still says B.
+    await page.waitForTimeout(5000);
+    await expect(group.getByRole('radio').nth(1)).toBeChecked();
+    await expect(page.locator('.vote .foot')).toContainText('you picked B');
+    await expect(page.locator('.vote .problem')).toHaveCount(0);
+  });
+});
+
+test.describe('copying the code', () => {
+  test('writes the clipboard inside the click, as Safari requires', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    // WebKit only lets a page write the clipboard while the click is being dispatched, not after an await.
+    await page.addInitScript(() => {
+      let dispatching = false;
+      addEventListener('click', () => (dispatching = true), true);
+      addEventListener('click', () => (dispatching = false));
+      const clipboard = navigator.clipboard;
+      const write = clipboard.writeText.bind(clipboard);
+      clipboard.writeText = (text: string) => (dispatching ? write(text) : Promise.reject(new DOMException('outside the gesture', 'NotAllowedError')));
+    });
+    await openLanding(page);
+    await dropNeedle(page);
+    await showPanel(page, 'code');
+    const copy = page.locator('.code-view .actions .act').nth(1);
+    await expect(copy).toBeEnabled();
+    // Until the catalog has loaded a click can only copy after awaiting it; from then on, inside the click.
+    await expect
+      .poll(
+        async () => {
+          await copy.click();
+          await page.waitForTimeout(200);
+          return copy.textContent();
+        },
+        { timeout: 10_000 },
+      )
+      .toContain('copied');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('setcpm(');
   });
 });
 

@@ -241,7 +241,11 @@ export class Lathe {
       this.seen.set(key, e.cycle);
       this.pending.push(toGlyph(e, key));
     }
-    if (paused && this.pending.length > LIMITS.pendingWhilePaused) this.cut(cycle, lookAt(this.mood, cycle), 1, false);
+    if (paused && this.pending.length > LIMITS.pendingWhilePaused) {
+      this.cut(cycle, lookAt(this.mood, cycle), 1, false);
+      // Nothing draws while paused, and a frame is where the keys are otherwise pruned.
+      this.pruneSeen(cycle);
+    }
   }
 
   setLookahead(events: readonly VisualEvent[]): void {
@@ -435,7 +439,8 @@ export class Lathe {
       this.blooms.push(g);
       if (g.family === 'kick' && !calm) this.pulse = 1;
     }
-    if (this.history.length > LIMITS.history) this.history.splice(0, Math.ceil(LIMITS.history / 10));
+    // Trimmed a tenth below the cap, so a full history isn't spliced on every frame.
+    if (this.history.length > LIMITS.history) this.history.splice(0, this.history.length - Math.floor(LIMITS.history * 0.9));
     if (this.blooms.length > LIMITS.blooms) this.blooms.splice(0, this.blooms.length - LIMITS.blooms);
   }
 

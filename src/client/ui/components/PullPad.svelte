@@ -6,6 +6,7 @@
   import type { PadPoint } from '../../../shared/protocol.ts';
   import { useRoom } from '../context.ts';
   import { axisWords, driftText, hueColor, padWords } from '../format.ts';
+  import { onPixelRatioChange } from '../media.ts';
   import { clampPad, nudgeAxis, PAD_RELAX_MS, padToPixel, pointerToPad, school } from '../pad.ts';
 
   const { room, calm } = useRoom();
@@ -156,17 +157,21 @@
     redraw();
   });
 
+  function fit(width: number, height: number): void {
+    if (!canvas) return;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    redraw();
+  }
+
   onMount(() => {
-    const ro = new ResizeObserver(([entry]) => {
-      if (!entry || !canvas) return;
-      const dpr = Math.min(2, devicePixelRatio || 1);
-      canvas.width = Math.round(entry.contentRect.width * dpr);
-      canvas.height = Math.round(entry.contentRect.height * dpr);
-      redraw();
-    });
+    const ro = new ResizeObserver(([entry]) => entry && fit(entry.contentRect.width, entry.contentRect.height));
     ro.observe(canvas!);
+    const offRatio = onPixelRatioChange(() => canvas && fit(canvas.clientWidth, canvas.clientHeight));
     return () => {
       ro.disconnect();
+      offRatio();
       cancelAnimationFrame(raf);
       if (keyRelease) clearTimeout(keyRelease);
     };
@@ -194,18 +199,28 @@
     place(me, false);
   }
 
+  /** A lean from the sliders: held briefly, then released like a pointer lifting off. */
+  function lean(axis: 'x' | 'y', v: number): void {
+    place({ ...(me ?? { x: 0, y: 0 }), [axis]: v }, true);
+    if (keyRelease) clearTimeout(keyRelease);
+    keyRelease = setTimeout(() => me && place(me, false), KEY_RELEASE_MS);
+  }
+
   function keyboard(axis: 'x' | 'y', e: KeyboardEvent): void {
-    const current = me ?? { x: 0, y: 0 };
     if (e.key === 'Escape') {
       if (me) place(me, false);
       return;
     }
-    const next = nudgeAxis(current[axis], e.key, e.shiftKey);
+    const next = nudgeAxis(me?.[axis] ?? 0, e.key, e.shiftKey);
     if (next === null) return;
     e.preventDefault();
-    place({ ...current, [axis]: next }, true);
-    if (keyRelease) clearTimeout(keyRelease);
-    keyRelease = setTimeout(() => me && place(me, false), KEY_RELEASE_MS);
+    lean(axis, next);
+  }
+
+  // VoiceOver and TalkBack adjust a native range by setting its value (input/change), never by keys.
+  function slide(axis: 'x' | 'y', e: Event & { currentTarget: HTMLInputElement }): void {
+    const v = e.currentTarget.valueAsNumber;
+    if (Number.isFinite(v) && v !== (me?.[axis] ?? 0)) lean(axis, v);
   }
 </script>
 
@@ -236,6 +251,7 @@
           value={me?.x ?? 0}
           aria-valuetext={axisWords('x', me?.x ?? 0)}
           onkeydown={(e) => keyboard('x', e)}
+          oninput={(e) => slide('x', e)}
         />
       </label>
       <label>
@@ -249,6 +265,7 @@
           value={me?.y ?? 0}
           aria-valuetext={axisWords('y', me?.y ?? 0)}
           onkeydown={(e) => keyboard('y', e)}
+          oninput={(e) => slide('y', e)}
         />
       </label>
     </div>

@@ -5,7 +5,9 @@ import { loadIdentity } from '../../src/client/room/identity.ts';
 import { createRoomStores } from '../../src/client/ui/stores.ts';
 import { readSettings } from '../../src/client/ui/settings.ts';
 import type { ClockSync, Engine, EngineState } from '../../src/client/engine/types.ts';
-import { HEARTBEAT_MS } from '../../src/shared/music.ts';
+import { createBucket, take } from '../../src/server/room/buckets.ts';
+import { quantizePad } from '../../src/client/ui/pad.ts';
+import { HEARTBEAT_MS, RATE_LIMITS } from '../../src/shared/music.ts';
 import { CLIENT_VERSION, HeartbeatSchema, HelloSchema, KeepSchema, PadSchema, ReactSchema, type RoomSnapshot } from '../../src/shared/protocol.ts';
 import { sectionA, snapshot } from '../engine/fixtures.ts';
 
@@ -19,20 +21,20 @@ class FakeSocket {
   connected = false;
   active = true;
   readonly handlers = new Map<string, Handler[]>();
-  readonly sent: { event: string; payload: any }[] = [];
+  readonly sent: { event: string; payload: any; at: number }[] = [];
   readonly acks = new Map<string, (payload: any) => unknown>();
   on(event: string, fn: Handler) {
     this.handlers.set(event, [...(this.handlers.get(event) ?? []), fn]);
     return this;
   }
   emit(event: string, payload?: unknown) {
-    this.sent.push({ event, payload });
+    this.sent.push({ event, payload, at: Date.now() });
     return this;
   }
   timeout(_ms: number) {
     return {
       emitWithAck: (event: string, payload?: unknown) => {
-        this.sent.push({ event, payload });
+        this.sent.push({ event, payload, at: Date.now() });
         const reply = this.acks.get(event);
         return reply ? Promise.resolve(reply(payload)) : Promise.reject(new Error('timeout'));
       },
@@ -222,6 +224,72 @@ describe('room connection', () => {
     expect(get(t.stores.connection)).toBe('reconnecting');
   });
 
+  it('a hello refused for capacity is retried with backoff until the room lets the listener in', () => {
+    const t = setup();
+    t.socket.open();
+    t.socket.fire('nack', { event: 'hello', reason: 'too-many-tabs' });
+    expect(get(t.stores.connection)).toBe('full');
+    // Jittered: the first retry lands within 5 s (± a quarter), the next within 10 s.
+    vi.advanceTimersByTime(6250);
+    expect(t.socket.of('hello')).toHaveLength(2);
+    t.socket.fire('nack', { event: 'hello', reason: 'room-full' });
+    vi.advanceTimersByTime(3000);
+    expect(t.socket.of('hello')).toHaveLength(2);
+    vi.advanceTimersByTime(9500);
+    expect(t.socket.of('hello')).toHaveLength(3);
+    t.socket.fire('welcome', welcome());
+    expect(get(t.stores.connection)).toBe('live');
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(t.socket.of('hello')).toHaveLength(3);
+  });
+
+  it('a listener refused on reconnect keeps retrying and can steer again once back in', () => {
+    const t = setup();
+    t.socket.open();
+    t.socket.fire('welcome', welcome());
+    t.engine.setState('running');
+    t.socket.fire('disconnect');
+    t.socket.open();
+    t.socket.fire('nack', { event: 'hello', reason: 'too-many-tabs' });
+    expect(get(t.stores.connection)).toBe('full');
+    expect(t.room.actions.keep(1)).toBe(false);
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(40_000);
+      t.socket.fire('nack', { event: 'hello', reason: 'too-many-tabs' });
+    }
+    // Backoff tops out at 30 s: every 40 s window holds exactly one more hello.
+    expect(t.socket.of('hello')).toHaveLength(2 + 5);
+    vi.advanceTimersByTime(40_000);
+    t.socket.fire('welcome', welcome());
+    expect(t.room.actions.keep(1)).toBe(true);
+  });
+
+  it('a pending hello retry is dropped on welcome, on disconnect and on destroy', () => {
+    const t = setup();
+    t.socket.open();
+    t.socket.fire('nack', { event: 'hello', reason: 'room-full' });
+    t.socket.fire('welcome', welcome());
+    vi.advanceTimersByTime(60_000);
+    expect(t.socket.of('hello')).toHaveLength(1);
+    expect(get(t.stores.connection)).toBe('live');
+    t.socket.fire('disconnect');
+    t.socket.open();
+    t.socket.fire('nack', { event: 'hello', reason: 'room-full' });
+    t.socket.fire('disconnect');
+    vi.advanceTimersByTime(60_000);
+    expect(t.socket.of('hello')).toHaveLength(2);
+    // The reconnect says hello itself, and its own refusal starts the backoff again from 5 s.
+    t.socket.open();
+    expect(t.socket.of('hello')).toHaveLength(3);
+    t.socket.fire('nack', { event: 'hello', reason: 'room-full' });
+    vi.advanceTimersByTime(6250);
+    expect(t.socket.of('hello')).toHaveLength(4);
+    t.socket.fire('nack', { event: 'hello', reason: 'room-full' });
+    t.room.destroy();
+    vi.advanceTimersByTime(60_000);
+    expect(t.socket.of('hello')).toHaveLength(4);
+  });
+
   it('sends the pad at most 4 times a second while dragging, and always the release', () => {
     const t = setup();
     t.socket.open();
@@ -237,6 +305,32 @@ describe('room connection', () => {
     const all = t.socket.of('pad');
     expect(all.at(-1)).toEqual({ x: 0.9, y: -0.4, active: false });
     for (const p of all) expect(PadSchema.safeParse(p).success).toBe(true);
+  });
+
+  it('keeps fast taps on the pad within the server’s pad bucket, so the last release always counts', () => {
+    const t = setup();
+    t.socket.open();
+    t.socket.fire('welcome', welcome());
+    const joinedAt = Date.now();
+    let spot = { x: 0, y: 0 };
+    // A tap every 300 ms (held 100 ms), each somewhere new, for 6 s.
+    for (let i = 0; i < 20; i++) {
+      spot = { x: ((i * 7) % 20) / 10 - 1, y: ((i * 3) % 20) / 10 - 1 };
+      t.room.actions.pad(spot, true);
+      vi.advanceTimersByTime(100);
+      t.room.actions.pad(spot, false);
+      vi.advanceTimersByTime(200);
+    }
+    vi.advanceTimersByTime(2000);
+    const pads = t.socket.sent.filter((s) => s.event === 'pad');
+    const refused = (latency: (i: number) => number) => {
+      const bucket = createBucket(RATE_LIMITS.pad, joinedAt);
+      return pads.flatMap((p, i) => (take(bucket, RATE_LIMITS.pad, p.at + latency(i)) ? [] : [p.at - joinedAt]));
+    };
+    expect(refused(() => 0)).toEqual([]);
+    // Even when the final release overtakes everything before it by 40 ms.
+    expect(refused((i) => (i < pads.length - 1 ? 40 : 0))).toEqual([]);
+    expect(pads.at(-1)!.payload).toEqual({ ...quantizePad(spot), active: false });
   });
 
   it('attributes Stay / Move on and reactions to what the listener heard', () => {

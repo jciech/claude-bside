@@ -1,6 +1,6 @@
 import { get } from 'svelte/store';
 import { describe, expect, it } from 'vitest';
-import { audibleInstances, nowPlaying, partState } from '../../src/client/ui/now.ts';
+import { audibleInstances, nowPlaying, partState, summaryLines } from '../../src/client/ui/now.ts';
 import { appendNote, applyScheduleUpdate, applySnapshotToStores, createRoomStores, movementAt, pruneSections, recordEtch, scheduleFromSnapshot, sectionAtCycle } from '../../src/client/ui/stores.ts';
 import type { LinerNote, ScheduleUpdate } from '../../src/shared/protocol.ts';
 import { sectionA, sectionB, snapshot } from '../engine/fixtures.ts';
@@ -75,5 +75,16 @@ describe('now playing', () => {
     const during = audibleInstances(base, 17);
     expect(during.filter((x) => x.leaving).map((x) => x.key)).toEqual([`${sectionA.id}:hats`, `${sectionA.id}:pad`]);
     expect(audibleInstances(base, 20).some((x) => x.leaving)).toBe(false);
+  });
+
+  it('keys the What’s-playing lines by instance: a pickup can read exactly like the part it rewrites', () => {
+    // B rewrites the pad with a one-bar lead-in on the same instrument, over the last bar of A.
+    const pickup = { ...sectionA.parts.find((p) => p.id === 'pad')!, enterBar: -1, continues: false };
+    const schedule = applyScheduleUpdate(base, update({ upserts: [{ ...sectionB, rev: 2, parts: [...sectionB.parts, pickup] }] })).state;
+    const lines = summaryLines(schedule, 15.5, new Set(['kick']));
+    const pads = lines.filter((l) => l.text === 'pad — Triangle, playing');
+    expect(pads.map((l) => l.key)).toEqual([`${sectionA.id}:pad`, `${sectionB.id}:pad`]);
+    expect(new Set(lines.map((l) => l.key)).size).toBe(lines.length);
+    expect(lines.find((l) => l.key === `${sectionA.id}:kick`)?.text).toBe('kick — Synth kick, playing (muted in your mix)');
   });
 });

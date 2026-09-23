@@ -81,3 +81,12 @@ export function audibleInstances(schedule: ScheduleState, cycle: number): { sect
   }
   return out;
 }
+
+/** The What's-playing list: a line per audible instance, keyed by instance (two can read alike). */
+export function summaryLines(schedule: ScheduleState, cycle: number, muted: ReadonlySet<string>): { key: string; text: string }[] {
+  return audibleInstances(schedule, cycle).map((x) => {
+    const state = x.leaving ? 'leaving' : partState(x.part, scoreBarAt(x.section, Math.max(0, cycle - x.section.startCycle)));
+    const words = state === 'waiting' ? `comes in at bar ${x.section.startCycle + x.part.enterBar}` : state === 'playing' ? 'playing' : 'leaving';
+    return { key: x.key, text: `${x.part.id} — ${x.part.instrument}, ${words}${muted.has(x.part.id) ? ' (muted in your mix)' : ''}` };
+  });
+}
